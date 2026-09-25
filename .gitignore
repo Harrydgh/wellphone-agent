@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+logs/*.jsonl
+screenshots/*.png
+!logs/.gitkeep
+!screenshots/.gitkeep
+Wellphone _ Notion.html
+Wellphone _ Notion_files/

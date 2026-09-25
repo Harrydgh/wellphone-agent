@@ -1,0 +1,128 @@
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+from .actions import UnsafeActionError
+from .adb import AdbClient, AdbError, ensure_connected
+from .demo import run_browser_demo
+from .display import VirtualDisplayError, VirtualDisplaySession
+from .tools import ToolNotFoundError, find_adb, find_scrcpy
+
+
+def command_doctor() -> int:
+    adb_path = find_adb()
+    scrcpy_path = find_scrcpy()
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+
+    print(f"ADB:     {adb_path}")
+    print(f"scrcpy:  {scrcpy_path}")
+    client = AdbClient(adb_path)
+    device = ensure_connected(client, preferred)
+    info = client.device_info(device.serial)
+
+    print(f"Serial:  {info.serial}")
+    print(f"Model:   {info.model}")
+    print(f"Android: {info.android_version} (SDK {info.sdk})")
+    print(f"MIUI:    {info.miui_version or 'not detected'}")
+    print("Browsers:")
+    if info.browser_packages:
+        for package in info.browser_packages:
+            print(f"  - {package}")
+    else:
+        print("  - none detected")
+    print("Status:  READY")
+    return 0
+
+
+def command_display_test(duration: float, app: str) -> int:
+    adb_path = find_adb()
+    scrcpy_path = find_scrcpy()
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    client = AdbClient(adb_path)
+    device = ensure_connected(client, preferred)
+
+    size = os.environ.get("WELLPHONE_DISPLAY_SIZE", "1080x1920")
+    dpi = int(os.environ.get("WELLPHONE_DISPLAY_DPI", "420"))
+    session = VirtualDisplaySession(
+        scrcpy_path,
+        device.serial,
+        size=size,
+        dpi=dpi,
+        start_app=app,
+    )
+    try:
+        display_id = session.start()
+        print(f"Virtual display ready: display {display_id}")
+        print(f"App: {app}")
+        print(f"Keeping it open for {duration:g} seconds...")
+        time.sleep(duration)
+        print("Display test completed.")
+        return 0
+    finally:
+        session.stop()
+
+
+def command_demo(url: str, hold: float, app: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    log_path = run_browser_demo(
+        project_root=project_root,
+        preferred_serial=preferred,
+        package=app,
+        url=url,
+        hold_seconds=hold,
+    )
+    print("Browser demo completed successfully.")
+    print(f"Log: {log_path}")
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="wellphone")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser("doctor", help="discover and inspect an Android device")
+    display = subparsers.add_parser(
+        "display-test", help="create a temporary scrcpy virtual display"
+    )
+    display.add_argument("--duration", type=float, default=10.0)
+    display.add_argument(
+        "--app",
+        default=os.environ.get("WELLPHONE_BROWSER_PACKAGE", "com.android.browser"),
+    )
+    demo = subparsers.add_parser(
+        "demo", help="run the fixed browser automation on a virtual display"
+    )
+    demo.add_argument("--url", default="https://example.com")
+    demo.add_argument("--hold", type=float, default=5.0)
+    demo.add_argument(
+        "--app",
+        default=os.environ.get("WELLPHONE_BROWSER_PACKAGE", "com.android.browser"),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "doctor":
+            return command_doctor()
+        if args.command == "display-test":
+            return command_display_test(args.duration, args.app)
+        if args.command == "demo":
+            return command_demo(args.url, args.hold, args.app)
+    except (
+        AdbError,
+        ToolNotFoundError,
+        VirtualDisplayError,
+        UnsafeActionError,
+        RuntimeError,
+        ValueError,
+    ) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    return 2
