@@ -8,10 +8,12 @@ from pathlib import Path
 
 from .actions import UnsafeActionError
 from .adb import AdbClient, AdbError, ensure_connected
+from .control_demo import format_control_result, run_control_demo
 from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
 from .observe_demo import format_observation_result, run_observation_demo
 from .perception.frame_capture import FrameCaptureError
+from .scrcpy_control import ScrcpyControlError
 from .tools import ToolNotFoundError, find_adb, find_scrcpy
 
 
@@ -96,6 +98,18 @@ def command_observe(url: str, app: str) -> int:
     return 0
 
 
+def command_control_test(app: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    before, after, log_path = run_control_demo(
+        project_root=project_root,
+        preferred_serial=preferred,
+        package=app,
+    )
+    print(format_control_result(before, after, log_path))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wellphone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -125,6 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--app",
         default=os.environ.get("WELLPHONE_BROWSER_PACKAGE", "com.android.browser"),
     )
+    control_test = subparsers.add_parser(
+        "control-test", help="verify scrcpy input on an isolated virtual display"
+    )
+    control_test.add_argument(
+        "--app",
+        default="com.android.settings",
+    )
     return parser
 
 
@@ -140,12 +161,15 @@ def main(argv: list[str] | None = None) -> int:
             return command_demo(args.url, args.hold, args.app)
         if args.command == "observe":
             return command_observe(args.url, args.app)
+        if args.command == "control-test":
+            return command_control_test(args.app)
     except (
         AdbError,
         ToolNotFoundError,
         VirtualDisplayError,
         UnsafeActionError,
         FrameCaptureError,
+        ScrcpyControlError,
         RuntimeError,
         ValueError,
     ) as exc:

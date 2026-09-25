@@ -30,21 +30,25 @@ class ActionControllerTests(unittest.TestCase):
 
     def test_tap_is_always_targeted_to_virtual_display(self) -> None:
         adb = FakeAdb()
-        controller = ActionController(adb, "device", 7)  # type: ignore[arg-type]
-        controller.tap(100, 200)
-        self.assertEqual(
-            adb.shell_calls[0],
-            (
-                "device",
-                "input",
-                "touchscreen",
-                "-d",
-                "7",
-                "tap",
-                "100",
-                "200",
-            ),
+        class FakeInput:
+            def __init__(self) -> None:
+                self.tap_call: tuple[int, int] | None = None
+
+            def tap(self, x: int, y: int) -> None:
+                self.tap_call = (x, y)
+
+        input_backend = FakeInput()
+        controller = ActionController(
+            adb, "device", 7, input_backend  # type: ignore[arg-type]
         )
+        controller.tap(100, 200)
+        self.assertEqual(input_backend.tap_call, (100, 200))
+        self.assertEqual(adb.shell_calls, [])
+
+    def test_tap_requires_scrcpy_control_session(self) -> None:
+        controller = ActionController(FakeAdb(), "device", 7)  # type: ignore[arg-type]
+        with self.assertRaises(UnsafeActionError):
+            controller.tap(100, 200)
 
     def test_rejects_unsafe_url_scheme(self) -> None:
         controller = ActionController(FakeAdb(), "device", 7)  # type: ignore[arg-type]

@@ -156,10 +156,26 @@ class UIHierarchyInspector:
                 or bool(description)
             )
             if actionable and len(elements) < self.max_elements:
+                effective_text = text
+                effective_description = description
+                if attributes.get("clickable") == "true" and not (
+                    effective_text or effective_description
+                ):
+                    for descendant in node.iter("node"):
+                        if descendant is node:
+                            continue
+                        descendant_text = descendant.attrib.get("text", "").strip()
+                        descendant_description = descendant.attrib.get(
+                            "content-desc", ""
+                        ).strip()
+                        if descendant_text or descendant_description:
+                            effective_text = descendant_text
+                            effective_description = descendant_description
+                            break
                 elements.append(
                     VisibleElement(
-                        text=text,
-                        content_description=description,
+                        text=effective_text,
+                        content_description=effective_description,
                         resource_id=attributes.get("resource-id", ""),
                         class_name=attributes.get("class", ""),
                         bounds=attributes.get("bounds", ""),

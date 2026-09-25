@@ -133,6 +133,29 @@ Display #0 (activities from top to bottom):
         self.assertEqual(state.clickable_center("拒绝"), (301, 1599))
         self.assertIsNone(state.resource_center("missing"))
 
+    def test_clickable_parent_inherits_descendant_label(self) -> None:
+        xml = """<?xml version='1.0' encoding='UTF-8'?>
+<hierarchy rotation="0">
+  <node text="" resource-id="row" class="android.view.ViewGroup"
+        package="com.android.settings" content-desc="" clickable="true"
+        enabled="true" scrollable="false" bounds="[0,500][1080,650]">
+    <node text="WLAN" resource-id="title" class="android.widget.TextView"
+          package="com.android.settings" content-desc="" clickable="false"
+          enabled="true" scrollable="false" bounds="[100,520][400,620]" />
+  </node>
+</hierarchy>"""
+
+        class HierarchyAdb(FakeAdb):
+            def shell(self, *args: object, **kwargs: object) -> str:
+                return xml if "cat" in args else ""
+
+        inspector = UIHierarchyInspector(  # type: ignore[arg-type]
+            HierarchyAdb(""), "device"
+        )
+        _, elements, _ = inspector.inspect("com.android.settings")
+        self.assertEqual(elements[0].text, "WLAN")
+        self.assertTrue(elements[0].clickable)
+
     def test_tracker_marks_repeated_frames_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             capture = FakeCapture(["0" * 16] * 4, Path(directory))
