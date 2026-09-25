@@ -20,10 +20,11 @@ class ActionController:
         self.serial = serial
         self.display_id = display_id
 
-    def _input(self, *args: str) -> None:
+    def _input(self, source: str, *args: str) -> None:
         self.adb.shell(
             self.serial,
             "input",
+            source,
             "-d",
             str(self.display_id),
             *args,
@@ -32,7 +33,7 @@ class ActionController:
     def tap(self, x: int, y: int) -> None:
         if x < 0 or y < 0:
             raise UnsafeActionError("Tap coordinates must be non-negative.")
-        self._input("tap", str(x), str(y))
+        self._input("touchscreen", "tap", str(x), str(y))
 
     def swipe(
         self,
@@ -45,6 +46,7 @@ class ActionController:
         if min(x1, y1, x2, y2) < 0 or duration_ms <= 0:
             raise UnsafeActionError("Swipe coordinates and duration are invalid.")
         self._input(
+            "touchscreen",
             "swipe",
             str(x1),
             str(y1),
@@ -56,7 +58,15 @@ class ActionController:
     def keyevent(self, keycode: str) -> None:
         if not re.fullmatch(r"KEYCODE_[A-Z0-9_]+|\d+", keycode):
             raise UnsafeActionError(f"Invalid keycode: {keycode}")
-        self._input("keyevent", keycode)
+        self._input("keyboard", "keyevent", keycode)
+
+    def keycombination(self, *keycodes: str) -> None:
+        if len(keycodes) < 2 or any(
+            not re.fullmatch(r"KEYCODE_[A-Z0-9_]+|\d+", code)
+            for code in keycodes
+        ):
+            raise UnsafeActionError("A key combination needs at least two keycodes.")
+        self._input("keyboard", "keycombination", *keycodes)
 
     def type_ascii(self, text: str) -> None:
         if not text or not re.fullmatch(r"[A-Za-z0-9 ._\-]+", text):
@@ -64,7 +74,7 @@ class ActionController:
                 "First milestone text input supports only ASCII letters, numbers, "
                 "spaces, dot, underscore and hyphen."
             )
-        self._input("text", text.replace(" ", "%s"))
+        self._input("keyboard", "text", text.replace(" ", "%s"))
 
     def open_url(self, url: str, package: str) -> None:
         parsed = urlparse(url)
@@ -99,4 +109,3 @@ class ActionController:
         next_display = output.find("Display: mDisplayId=", start + len(marker))
         section = output[start:] if next_display < 0 else output[start:next_display]
         return package in section
-

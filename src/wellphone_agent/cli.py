@@ -10,6 +10,8 @@ from .actions import UnsafeActionError
 from .adb import AdbClient, AdbError, ensure_connected
 from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
+from .observe_demo import format_observation_result, run_observation_demo
+from .perception.frame_capture import FrameCaptureError
 from .tools import ToolNotFoundError, find_adb, find_scrcpy
 
 
@@ -81,6 +83,19 @@ def command_demo(url: str, hold: float, app: str) -> int:
     return 0
 
 
+def command_observe(url: str, app: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    before, after, log_path = run_observation_demo(
+        project_root=project_root,
+        preferred_serial=preferred,
+        package=app,
+        url=url,
+    )
+    print(format_observation_result(before, after, log_path))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wellphone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -102,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--app",
         default=os.environ.get("WELLPHONE_BROWSER_PACKAGE", "com.android.browser"),
     )
+    observe = subparsers.add_parser(
+        "observe", help="capture and compare two virtual-screen page states"
+    )
+    observe.add_argument("--url", default="https://www.baidu.com/s?wd=Android")
+    observe.add_argument(
+        "--app",
+        default=os.environ.get("WELLPHONE_BROWSER_PACKAGE", "com.android.browser"),
+    )
     return parser
 
 
@@ -115,11 +138,14 @@ def main(argv: list[str] | None = None) -> int:
             return command_display_test(args.duration, args.app)
         if args.command == "demo":
             return command_demo(args.url, args.hold, args.app)
+        if args.command == "observe":
+            return command_observe(args.url, args.app)
     except (
         AdbError,
         ToolNotFoundError,
         VirtualDisplayError,
         UnsafeActionError,
+        FrameCaptureError,
         RuntimeError,
         ValueError,
     ) as exc:

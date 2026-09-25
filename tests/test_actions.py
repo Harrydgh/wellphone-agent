@@ -34,7 +34,16 @@ class ActionControllerTests(unittest.TestCase):
         controller.tap(100, 200)
         self.assertEqual(
             adb.shell_calls[0],
-            ("device", "input", "-d", "7", "tap", "100", "200"),
+            (
+                "device",
+                "input",
+                "touchscreen",
+                "-d",
+                "7",
+                "tap",
+                "100",
+                "200",
+            ),
         )
 
     def test_rejects_unsafe_url_scheme(self) -> None:
@@ -57,4 +66,3 @@ Display: mDisplayId=0 rootTasks=2
 
 if __name__ == "__main__":
     unittest.main()
-

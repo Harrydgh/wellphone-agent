@@ -2,8 +2,9 @@ __pycache__/
 *.py[cod]
 .env
 .venv/
+*.egg-info/
 logs/*.jsonl
-screenshots/*.png
+screenshots/*
 !logs/.gitkeep
 !screenshots/.gitkeep
 Wellphone _ Notion.html

@@ -38,16 +38,6 @@ def run_browser_demo(
         log.write("url_opened", display_id=display_id, url=url)
         time.sleep(4)
 
-        controller.swipe(540, 1500, 540, 650, 500)
-        log.write(
-            "action",
-            action="swipe",
-            display_id=display_id,
-            start=[540, 1500],
-            end=[540, 650],
-        )
-        time.sleep(1)
-
         verified = controller.app_is_on_display(package)
         log.write("verification", app_on_virtual_display=verified)
         if not verified:
@@ -65,4 +55,3 @@ def run_browser_demo(
     finally:
         display.stop()
         log.write("display_stopped")
-

@@ -3,7 +3,11 @@ name = "wellphone-agent"
 version = "0.1.0"
 description = "A non-intrusive Android agent running on a secondary virtual display"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "av>=14",
+    "numpy>=1.26",
+    "Pillow>=10",
+]
 
 [project.scripts]
 wellphone = "wellphone_agent.cli:main"
@@ -17,4 +21,3 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
