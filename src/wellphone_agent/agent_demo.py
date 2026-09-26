@@ -5,7 +5,16 @@ from pathlib import Path
 
 from .actions import ActionController
 from .adb import AdbClient, ensure_connected
-from .agent import AgentGoal, AgentLoop, AgentResult, SettingsPlanner
+from .agent import (
+    AgentGoal,
+    AgentLoop,
+    AgentResult,
+    OpenAIPlanner,
+    SAFE_SETTINGS_GOALS,
+    SettingsPlanner,
+    parse_safe_goal,
+)
+from .agent.core import AgentPlanner
 from .perception.frame_capture import VirtualDisplayCapture
 from .perception.state import AndroidPageInspector, PageStateTracker, UIHierarchyInspector
 from .runlog import RunLogger
@@ -13,22 +22,13 @@ from .scrcpy_control import ScrcpyControlSession
 from .tools import find_adb, find_scrcpy
 
 
-SAFE_SETTINGS_GOALS = {
-    "WLAN": AgentGoal(
-        description="打开系统 WLAN 设置页面",
-        allowed_package="com.android.settings",
-        target_label="WLAN",
-        success_activity_contains=("WifiSettings",),
-    ),
-}
-
-
-def run_agent_demo(
-    *, project_root: Path, preferred_serial: str | None, target: str
+def _run_agent(
+    *,
+    project_root: Path,
+    preferred_serial: str | None,
+    goal: AgentGoal,
+    planner: AgentPlanner,
 ) -> tuple[AgentResult, Path]:
-    if target not in SAFE_SETTINGS_GOALS:
-        raise ValueError(f"当前安全演示不支持目标：{target}")
-    goal = SAFE_SETTINGS_GOALS[target]
     adb = AdbClient(find_adb())
     device = ensure_connected(adb, preferred_serial)
     scrcpy = find_scrcpy()
@@ -50,7 +50,7 @@ def run_agent_demo(
         loop = AgentLoop(
             tracker,
             ActionController(adb, device.serial, display_id, session),
-            SettingsPlanner(),
+            planner,
             logger=log,
         )
         result = loop.run(goal)
@@ -63,3 +63,31 @@ def run_agent_demo(
     finally:
         session.stop()
         log.write("display_stopped")
+
+
+def run_agent_demo(
+    *, project_root: Path, preferred_serial: str | None, target: str
+) -> tuple[AgentResult, Path]:
+    if target not in SAFE_SETTINGS_GOALS:
+        raise ValueError(f"当前安全演示不支持目标：{target}")
+    return _run_agent(
+        project_root=project_root,
+        preferred_serial=preferred_serial,
+        goal=SAFE_SETTINGS_GOALS[target],
+        planner=SettingsPlanner(),
+    )
+
+
+def run_ai_agent_demo(
+    *,
+    project_root: Path,
+    preferred_serial: str | None,
+    task: str,
+    model: str,
+) -> tuple[AgentResult, Path]:
+    return _run_agent(
+        project_root=project_root,
+        preferred_serial=preferred_serial,
+        goal=parse_safe_goal(task),
+        planner=OpenAIPlanner(model=model),
+    )

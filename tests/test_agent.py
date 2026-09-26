@@ -7,7 +7,9 @@ from wellphone_agent.agent import (
     AgentGoal,
     AgentLoop,
     AgentSafetyPolicy,
+    OpenAIPlanner,
     SettingsPlanner,
+    parse_safe_goal,
 )
 from wellphone_agent.agent.core import AgentError
 from wellphone_agent.perception.state import PageState, VisibleElement
@@ -91,7 +93,47 @@ class FakeActions:
         self.calls.append(("keyevent", keycode))
 
 
+class FakeModelResponse:
+    def __init__(self, output_text: str) -> None:
+        self.output_text = output_text
+
+
+class FakeResponses:
+    def __init__(self, output_text: str, error: Exception | None = None) -> None:
+        self.output_text = output_text
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    def create(self, **kwargs: object) -> FakeModelResponse:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return FakeModelResponse(self.output_text)
+
+
+class FakeOpenAI:
+    def __init__(
+        self, output_text: str = "", error: Exception | None = None
+    ) -> None:
+        self.responses = FakeResponses(output_text, error)
+
+
+class FakeAPIError(RuntimeError):
+    def __init__(self, status_code: int, secret_detail: str) -> None:
+        super().__init__(secret_detail)
+        self.status_code = status_code
+
+
 class AgentTests(unittest.TestCase):
+    def test_natural_language_goal_parser_accepts_wifi_synonym(self) -> None:
+        goal = parse_safe_goal("请帮我打开 Wi-Fi 设置")
+        self.assertEqual(goal.target_label, "WLAN")
+        self.assertEqual(goal.allowed_package, "com.android.settings")
+
+    def test_natural_language_goal_parser_rejects_unapproved_task(self) -> None:
+        with self.assertRaisesRegex(AgentError, "只开放"):
+            parse_safe_goal("删除账号")
+
     def test_planner_taps_visible_goal(self) -> None:
         action = SettingsPlanner().plan(GOAL, page(), ())
         self.assertEqual(action.kind, "tap")
@@ -112,6 +154,37 @@ class AgentTests(unittest.TestCase):
             AgentSafetyPolicy().validate(
                 GOAL, page(), AgentAction("finish", "not really complete")
             )
+
+    def test_openai_planner_uses_structured_minimal_state(self) -> None:
+        client = FakeOpenAI(
+            '{"action":"tap","target":"WLAN","reason":"目标可点击"}'
+        )
+        planner = OpenAIPlanner(model="test-model", client=client)
+        action = planner.plan(GOAL, page(), ())
+        self.assertEqual(action, AgentAction("tap", "目标可点击", "WLAN"))
+        call = client.responses.calls[0]
+        self.assertEqual(call["model"], "test-model")
+        self.assertFalse(call["store"])
+        self.assertIn("json_schema", str(call["text"]))
+        self.assertNotIn("3109319912", str(call["input"]))
+
+    def test_openai_planner_rejects_unapproved_tap_target(self) -> None:
+        client = FakeOpenAI(
+            '{"action":"tap","target":"蓝牙","reason":"点击另一个目标"}'
+        )
+        with self.assertRaisesRegex(AgentError, "outside the approved goal"):
+            OpenAIPlanner(model="test-model", client=client).plan(GOAL, page(), ())
+
+    def test_openai_planner_sanitizes_authentication_error(self) -> None:
+        client = FakeOpenAI(error=FakeAPIError(401, "secret-key-detail"))
+        with self.assertRaisesRegex(AgentError, "凭据无效") as caught:
+            OpenAIPlanner(model="test-model", client=client).plan(GOAL, page(), ())
+        self.assertNotIn("secret-key-detail", str(caught.exception))
+
+    def test_openai_planner_reports_exhausted_quota(self) -> None:
+        client = FakeOpenAI(error=FakeAPIError(429, "billing-detail"))
+        with self.assertRaisesRegex(AgentError, "无可用额度"):
+            OpenAIPlanner(model="test-model", client=client).plan(GOAL, page(), ())
 
     def test_agent_loop_observes_taps_and_verifies_goal(self) -> None:
         observer = FakeObserver(

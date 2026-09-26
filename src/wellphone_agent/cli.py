@@ -9,7 +9,7 @@ from pathlib import Path
 from .actions import UnsafeActionError
 from .adb import AdbClient, AdbError, ensure_connected
 from .agent.core import AgentError
-from .agent_demo import run_agent_demo
+from .agent_demo import run_agent_demo, run_ai_agent_demo
 from .control_demo import format_control_result, run_control_demo
 from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
@@ -129,6 +129,25 @@ def command_agent_test(target: str) -> int:
     return 0
 
 
+def command_ai_agent(task: str, model: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    result, log_path = run_ai_agent_demo(
+        project_root=project_root,
+        preferred_serial=preferred,
+        task=task,
+        model=model,
+    )
+    print("AI Agent goal completed successfully.")
+    print(f"Task:  {task}")
+    print(f"Model: {model}")
+    print(f"Steps: {result.steps}")
+    print(f"Final activity: {result.final_state.current_activity}")
+    print(f"Screenshot: {result.final_state.screenshot}")
+    print(f"Log: {log_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wellphone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -169,6 +188,14 @@ def build_parser() -> argparse.ArgumentParser:
         "agent-test", help="run the safe goal-driven Settings agent"
     )
     agent_test.add_argument("--target", choices=("WLAN",), default="WLAN")
+    ai_agent = subparsers.add_parser(
+        "ai-agent", help="run the safe natural-language OpenAI planner"
+    )
+    ai_agent.add_argument("--task", default="打开WLAN设置")
+    ai_agent.add_argument(
+        "--model",
+        default=os.environ.get("WELLPHONE_OPENAI_MODEL", "gpt-6-astra"),
+    )
     return parser
 
 
@@ -188,6 +215,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_control_test(args.app)
         if args.command == "agent-test":
             return command_agent_test(args.target)
+        if args.command == "ai-agent":
+            return command_ai_agent(args.task, args.model)
     except (
         AdbError,
         AgentError,

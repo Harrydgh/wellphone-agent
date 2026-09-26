@@ -166,7 +166,10 @@ class AgentLoop:
                 raise AgentError(
                     "Observed display does not match the controller's virtual display."
                 )
-            action = self.planner.plan(goal, state, tuple(history))
+            if goal.is_satisfied(state):
+                action = AgentAction("finish", "目标页面已经由本地成功条件验证。")
+            else:
+                action = self.planner.plan(goal, state, tuple(history))
             self.policy.validate(goal, state, action)
             self._log(
                 "agent_decision",
