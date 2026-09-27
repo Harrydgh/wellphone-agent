@@ -1,0 +1,19 @@
+param(
+    [string]$Task = "打开WLAN设置",
+    [string]$Model = $(if ($env:WELLPHONE_DEEPSEEK_MODEL) { $env:WELLPHONE_DEEPSEEK_MODEL } else { "deepseek-flash" })
+)
+
+$ErrorActionPreference = "Stop"
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$env:PYTHONPATH = Join-Path $projectRoot "src"
+$projectPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
+if (-not (Test-Path $projectPython)) { $projectPython = "python" }
+
+Push-Location $projectRoot
+try {
+    & $projectPython -m wellphone_agent langgraph-agent --task $Task --model $Model
+    exit $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}

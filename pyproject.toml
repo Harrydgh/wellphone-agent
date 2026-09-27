@@ -5,9 +5,13 @@ description = "A non-intrusive Android agent running on a secondary virtual disp
 requires-python = ">=3.11"
 dependencies = [
     "av>=14",
+    "langchain>=1.0,<2",
+    "langchain-deepseek>=1.0,<2",
+    "langgraph>=1.0,<2",
     "numpy>=1.26",
     "openai>=3.19,<4",
     "Pillow>=10",
+    "pydantic>=2.10,<3",
 ]
 
 [project.scripts]

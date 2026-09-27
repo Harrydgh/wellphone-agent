@@ -9,6 +9,8 @@ from .agent import (
     AgentGoal,
     AgentLoop,
     AgentResult,
+    DeepSeekPlanner,
+    LangGraphAgentLoop,
     OpenAIPlanner,
     SAFE_SETTINGS_GOALS,
     SettingsPlanner,
@@ -28,6 +30,7 @@ def _run_agent(
     preferred_serial: str | None,
     goal: AgentGoal,
     planner: AgentPlanner,
+    engine: str = "legacy",
 ) -> tuple[AgentResult, Path]:
     adb = AdbClient(find_adb())
     device = ensure_connected(adb, preferred_serial)
@@ -47,7 +50,8 @@ def _run_agent(
             AndroidPageInspector(adb, device.serial),
             UIHierarchyInspector(adb, device.serial),
         )
-        loop = AgentLoop(
+        loop_class = LangGraphAgentLoop if engine == "langgraph" else AgentLoop
+        loop = loop_class(
             tracker,
             ActionController(adb, device.serial, display_id, session),
             planner,
@@ -90,4 +94,20 @@ def run_ai_agent_demo(
         preferred_serial=preferred_serial,
         goal=parse_safe_goal(task),
         planner=OpenAIPlanner(model=model),
+    )
+
+
+def run_langgraph_agent_demo(
+    *,
+    project_root: Path,
+    preferred_serial: str | None,
+    task: str,
+    model: str,
+) -> tuple[AgentResult, Path]:
+    return _run_agent(
+        project_root=project_root,
+        preferred_serial=preferred_serial,
+        goal=parse_safe_goal(task),
+        planner=DeepSeekPlanner(model=model),
+        engine="langgraph",
     )

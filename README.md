@@ -18,8 +18,12 @@
 - [x] 规则规划器与最大步数、无变化停止保护
 - [x] 自然语言安全目标解析
 - [x] OpenAI Structured Outputs 模型规划器
+- [x] LangGraph 状态工作流与运行内检查点
+- [x] LangChain DeepSeek 结构化动作规划器
+- [x] DeepSeek `deepseek-flash` 独立 API 验收
 - [ ] 截图 OCR（作为 UI Automator 无法读取时的补充）
 - [ ] AI 模型规划器真机端到端验收（等待 API 可用额度）
+- [x] LangGraph + DeepSeek 真机端到端验收
 
 已知限制：Android App 默认不一定支持多实例。当用户与 Agent 同时打开同一个 App 时，系统可能复用或移动现有任务，导致其中一块显示停在最后一帧。第一版要求双方使用不同 App。
 
@@ -126,6 +130,29 @@
 也可以通过 `WELLPHONE_OPENAI_MODEL` 或脚本的 `-Model` 参数选择账户有权限使用的模型。项目使用 `OPENAI_API_KEY`，密钥不得写入代码、README、日志或 Git。
 
 2026-09-26 离线结构化输出、越权目标拒绝、自然语言目标白名单和 API 错误脱敏测试已经通过。真实 API 测试已到达 OpenAI 服务端，但当前备用账户返回额度不足，因此本阶段暂不标记为真机端到端完成；增加可用额度后需重新运行上述命令完成验收。
+
+## 第五阶段：LangGraph 工作流与 DeepSeek（已完成）
+
+本阶段在保留原有 `AgentLoop` 稳定基线的同时，新增 LangGraph 状态工作流。新流程由 `observe`、`plan`、`validate`、`execute`、`verify` 和 `finalize` 六个节点组成，并通过条件边完成成功、失败、重试和安全停止。每次运行使用独立 `thread_id` 和内存检查点，便于追踪同一次任务的状态变化。
+
+DeepSeek 通过 LangChain 官方 `langchain-deepseek` 适配器接入。模型只能返回 `tap`、`scroll_down` 或 `abort`，点击目标仍必须等于本地白名单目标；坐标由 UI Automator 当前页面重新计算。模型不能直接调用 ADB、scrcpy 或任意坐标，所有动作仍须经过现有 `AgentSafetyPolicy`。
+
+模型请求只包含任务、App、Activity、目标是否可点击和安全浏览次数，不上传截图、设备标识、完整页面文字或周边 WLAN 名称。API 错误不会把密钥或服务端敏感详情写入日志。
+
+配置环境变量：
+
+```powershell
+$env:DEEPSEEK_API_KEY = "你的密钥"
+$env:WELLPHONE_DEEPSEEK_MODEL = "deepseek-flash"
+```
+
+保持手机亮屏、解锁并在线后运行：
+
+```powershell
+.\scripts\langgraph_agent_test.ps1 -Task "请帮我打开 Wi-Fi 设置"
+```
+
+2026-09-27 已使用 `deepseek-flash` 完成独立 API 和真机端到端验收：LangGraph 在虚拟显示中观察系统设置，DeepSeek 返回受限制的 `tap WLAN` 动作，本地安全策略批准并执行 1 次点击，最终由本地 Activity 验证进入 `.Settings$WifiSettingsActivity`。对应截图和 JSONL 日志保存在 `screenshots/` 与 `logs/`。DeepSeek 偶发格式差异会在执行动作前进行一次安全重试，并由本地 Pydantic 严格校验；两次均失败则停止，不会点击手机。项目共 42 项自动测试通过。
 
 ## 安全边界
 
