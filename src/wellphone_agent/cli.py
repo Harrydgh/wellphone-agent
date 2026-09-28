@@ -16,8 +16,10 @@ from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
 from .observe_demo import format_observation_result, run_observation_demo
 from .perception.frame_capture import FrameCaptureError
+from .perception.ocr import OCRError
 from .scrcpy_control import ScrcpyControlError
 from .tools import ToolNotFoundError, find_adb, find_scrcpy
+from .understanding_demo import format_understanding_result, run_understanding_demo
 
 
 def command_doctor() -> int:
@@ -113,6 +115,18 @@ def command_control_test(app: str) -> int:
     return 0
 
 
+def command_understand(app: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    understanding, log_path = run_understanding_demo(
+        project_root=project_root,
+        preferred_serial=preferred,
+        package=app,
+    )
+    print(format_understanding_result(understanding, log_path))
+    return 0
+
+
 def command_agent_test(target: str) -> int:
     preferred = os.environ.get("WELLPHONE_SERIAL") or None
     project_root = Path(__file__).resolve().parents[2]
@@ -204,6 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--app",
         default="com.android.settings",
     )
+    understand = subparsers.add_parser(
+        "understand",
+        help="locally understand one virtual-screen frame without taking action",
+    )
+    understand.add_argument("--app", default="com.android.settings")
     agent_test = subparsers.add_parser(
         "agent-test", help="run the safe goal-driven Settings agent"
     )
@@ -243,6 +262,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_observe(args.url, args.app)
         if args.command == "control-test":
             return command_control_test(args.app)
+        if args.command == "understand":
+            return command_understand(args.app)
         if args.command == "agent-test":
             return command_agent_test(args.target)
         if args.command == "ai-agent":
@@ -256,6 +277,7 @@ def main(argv: list[str] | None = None) -> int:
         VirtualDisplayError,
         UnsafeActionError,
         FrameCaptureError,
+        OCRError,
         ScrcpyControlError,
         RuntimeError,
         ValueError,

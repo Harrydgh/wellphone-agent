@@ -111,7 +111,11 @@ class VirtualDisplayCapture:
                 check=False,
             )
             if result.returncode != 0 or not clip_path.is_file():
-                detail = (result.stderr or result.stdout).strip()
+                detail = "\n".join(
+                    part.strip()
+                    for part in (result.stdout, result.stderr)
+                    if part and part.strip()
+                )
                 raise FrameCaptureError(f"scrcpy recording failed: {detail}")
 
             last_frame = None
