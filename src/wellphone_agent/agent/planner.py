@@ -22,11 +22,13 @@ class SettingsPlanner:
             return AgentAction("finish", "目标页面已经通过 Activity 验证。")
         if state.current_app != goal.allowed_package:
             return AgentAction("abort", "当前页面已经离开允许的系统设置应用。")
-        if state.clickable_center(goal.target_label) is not None:
+        candidates = goal.clickable_candidates(state)
+        if candidates:
+            target = candidates[0]
             return AgentAction(
                 "tap",
-                f"当前页面存在可点击的“{goal.target_label}”。",
-                goal.target_label,
+                f"当前页面存在允许点击的“{target}”。",
+                target,
             )
         scrolls = sum(item.action.kind == "scroll_down" for item in history)
         if scrolls < self.max_scrolls:

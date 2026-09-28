@@ -10,12 +10,17 @@ from .core import (
 )
 from .goals import SAFE_SETTINGS_GOALS, parse_safe_goal
 from .deepseek_planner import DeepSeekActionDecision, DeepSeekPlanner
-from .langgraph_workflow import LangGraphAgentLoop, PhoneAgentState
+from .langgraph_workflow import (
+    AgentApprovalRequired,
+    LangGraphAgentLoop,
+    PhoneAgentState,
+)
 from .openai_planner import OpenAIPlanner
 from .planner import SettingsPlanner
 
 __all__ = [
     "AgentAction",
+    "AgentApprovalRequired",
     "AgentGoal",
     "AgentLoop",
     "AgentResult",

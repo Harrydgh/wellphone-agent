@@ -53,11 +53,11 @@ class OpenAIPlanner:
         state: PageState,
         history: Sequence[AgentTransition],
     ) -> AgentAction:
-        if state.current_app != goal.allowed_package:
+        if state.current_app not in goal.package_scope:
             return AgentAction("abort", "当前页面已离开任务允许的应用。")
         scroll_count = sum(item.action.kind == "scroll_down" for item in history)
-        target_visible = state.clickable_center(goal.target_label) is not None
-        if not target_visible and scroll_count >= self.max_scrolls:
+        candidates = goal.clickable_candidates(state)
+        if not candidates and scroll_count >= self.max_scrolls:
             return AgentAction("abort", "达到安全浏览上限后仍未发现目标。")
 
         # Deliberately omit screenshots and unrelated visible text. The model
@@ -67,7 +67,7 @@ class OpenAIPlanner:
             "current_app": state.current_app,
             "current_activity": state.current_activity,
             "target_label": goal.target_label,
-            "target_is_clickable": target_visible,
+            "clickable_candidates": candidates,
             "scroll_count": scroll_count,
             "max_scrolls": self.max_scrolls,
             "allowed_actions": ["tap", "scroll_down", "abort"],
@@ -78,8 +78,8 @@ class OpenAIPlanner:
                 store=False,
                 instructions=(
                     "你是安卓虚拟屏的受限动作规划器。只选择一个动作。"
-                    "目标可点击时选择 tap 且 target 必须等于 target_label；"
-                    "目标不可见时可以选择 scroll_down；无法安全继续时选择 abort。"
+                    "clickable_candidates 非空时选择 tap，且 target 必须来自该列表；"
+                    "列表为空时可以选择 scroll_down；无法安全继续时选择 abort。"
                     "不要声称已执行动作，不要生成坐标。"
                 ),
                 input=json.dumps(state_payload, ensure_ascii=False),
@@ -106,7 +106,7 @@ class OpenAIPlanner:
         action = output["action"]
         target = output["target"]
         reason = str(output["reason"])[:300]
-        if action == "tap" and target != goal.target_label:
+        if action == "tap" and target not in candidates:
             raise AgentError("AI planner returned a tap target outside the approved goal.")
         if action != "tap":
             target = None

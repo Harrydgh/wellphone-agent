@@ -9,6 +9,7 @@ from ..perception.state import PageState
 from ..runlog import RunLogger
 
 ActionKind = Literal["tap", "scroll_down", "back", "finish", "abort"]
+RiskLevel = Literal["low", "medium", "high"]
 
 
 class AgentError(RuntimeError):
@@ -21,11 +22,39 @@ class AgentGoal:
     allowed_package: str
     target_label: str
     success_activity_contains: tuple[str, ...]
+    success_text_contains: tuple[str, ...] = ()
+    additional_allowed_packages: tuple[str, ...] = ()
+    allowed_tap_targets: tuple[str, ...] = ()
+    risk_level: RiskLevel = "low"
+    requires_confirmation: bool = False
+
+    @property
+    def tap_targets(self) -> tuple[str, ...]:
+        return self.allowed_tap_targets or (self.target_label,)
+
+    @property
+    def package_scope(self) -> tuple[str, ...]:
+        return (self.allowed_package, *self.additional_allowed_packages)
+
+    def clickable_candidates(self, state: PageState) -> tuple[str, ...]:
+        return tuple(
+            target
+            for target in self.tap_targets
+            if state.clickable_center(target) is not None
+        )
 
     def is_satisfied(self, state: PageState) -> bool:
         activity = state.current_activity or ""
-        return state.current_app == self.allowed_package and any(
+        activity_matches = any(
             marker in activity for marker in self.success_activity_contains
+        )
+        text_matches = not self.success_text_contains or any(
+            marker in state.visible_text for marker in self.success_text_contains
+        )
+        return (
+            state.current_app in self.package_scope
+            and activity_matches
+            and text_matches
         )
 
 
@@ -86,14 +115,18 @@ class AgentSafetyPolicy:
     ) -> None:
         if state.display_id <= 0:
             raise AgentError("Agent refused to act on the primary display.")
-        if state.current_app != goal.allowed_package:
+        if state.current_app not in goal.package_scope:
             raise AgentError(
                 f"Agent left its allowed app: {state.current_app or 'unknown'}."
             )
-        if any(term in goal.target_label for term in self.BLOCKED_TARGET_TERMS):
-            raise AgentError(f"Target is blocked by the safety policy: {goal.target_label}")
+        if any(
+            term in target
+            for target in goal.tap_targets
+            for term in self.BLOCKED_TARGET_TERMS
+        ):
+            raise AgentError("The task contains a target blocked by the safety policy.")
         if action.kind == "tap":
-            if action.target != goal.target_label:
+            if action.target not in goal.tap_targets:
                 raise AgentError("Planner attempted to tap outside the requested target.")
             if state.clickable_center(action.target) is None:
                 raise AgentError(f"Target is not safely clickable: {action.target}")

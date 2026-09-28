@@ -9,6 +9,7 @@ from pathlib import Path
 from .actions import UnsafeActionError
 from .adb import AdbClient, AdbError, ensure_connected
 from .agent.core import AgentError
+from .agent import SAFE_SETTINGS_GOALS
 from .agent_demo import run_agent_demo, run_ai_agent_demo, run_langgraph_agent_demo
 from .control_demo import format_control_result, run_control_demo
 from .demo import run_browser_demo
@@ -206,7 +207,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_test = subparsers.add_parser(
         "agent-test", help="run the safe goal-driven Settings agent"
     )
-    agent_test.add_argument("--target", choices=("WLAN",), default="WLAN")
+    agent_test.add_argument(
+        "--target", choices=tuple(SAFE_SETTINGS_GOALS), default="WLAN"
+    )
     ai_agent = subparsers.add_parser(
         "ai-agent", help="run the safe natural-language OpenAI planner"
     )

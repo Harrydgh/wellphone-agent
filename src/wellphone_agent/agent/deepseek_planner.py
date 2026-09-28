@@ -32,10 +32,13 @@ class DeepSeekPlanner:
         structured_model: Any | None = None,
         max_scrolls: int = 3,
         max_attempts: int = 2,
+        prefer_single_candidate: bool = True,
         base_url: str | None = None,
     ) -> None:
         if not model.strip():
             raise ValueError("A DeepSeek model name is required.")
+        if max_scrolls <= 0 or max_attempts <= 0:
+            raise ValueError("DeepSeek planner limits must be positive.")
         if structured_model is None:
             api_key = os.environ.get("DEEPSEEK_API_KEY")
             if not api_key:
@@ -70,6 +73,7 @@ class DeepSeekPlanner:
         self.structured_model = structured_model
         self.max_scrolls = max_scrolls
         self.max_attempts = max_attempts
+        self.prefer_single_candidate = prefer_single_candidate
 
     @staticmethod
     def _validate_decision(raw_decision: Any) -> DeepSeekActionDecision:
@@ -101,11 +105,17 @@ class DeepSeekPlanner:
         state: PageState,
         history: Sequence[AgentTransition],
     ) -> AgentAction:
-        if state.current_app != goal.allowed_package:
+        if state.current_app not in goal.package_scope:
             return AgentAction("abort", "当前页面已离开任务允许的应用。")
         scroll_count = sum(item.action.kind == "scroll_down" for item in history)
-        target_visible = state.clickable_center(goal.target_label) is not None
-        if not target_visible and scroll_count >= self.max_scrolls:
+        candidates = goal.clickable_candidates(state)
+        if self.prefer_single_candidate and len(candidates) == 1:
+            return AgentAction(
+                "tap",
+                "当前页面只有一个经过任务白名单批准的可点击候选。",
+                candidates[0],
+            )
+        if not candidates and scroll_count >= self.max_scrolls:
             return AgentAction("abort", "达到安全浏览上限后仍未发现目标。")
 
         # Screenshots, unrelated page text and device identifiers are intentionally
@@ -115,7 +125,7 @@ class DeepSeekPlanner:
             "current_app": state.current_app,
             "current_activity": state.current_activity,
             "target_label": goal.target_label,
-            "target_is_clickable": target_visible,
+            "clickable_candidates": candidates,
             "scroll_count": scroll_count,
             "max_scrolls": self.max_scrolls,
             "allowed_actions": ["tap", "scroll_down", "abort"],
@@ -124,8 +134,8 @@ class DeepSeekPlanner:
             (
                 "system",
                 "你是安卓虚拟屏的受限动作规划器。只返回一个符合指定结构的 JSON 动作。"
-                "目标可点击时选择 tap，且 target 必须严格等于 target_label；"
-                "目标不可见时可以选择 scroll_down；无法安全继续时选择 abort。"
+                "clickable_candidates 非空时选择 tap，且 target 必须严格来自该列表；"
+                "列表为空时可以选择 scroll_down；无法安全继续时选择 abort。"
                 "不要生成坐标，不要声称动作已经执行，不要扩大任务范围。",
             ),
             ("human", json.dumps(state_payload, ensure_ascii=False)),
@@ -154,7 +164,7 @@ class DeepSeekPlanner:
             raise AgentError(detail) from exc
 
         target = decision.target
-        if decision.action == "tap" and target != goal.target_label:
+        if decision.action == "tap" and target not in candidates:
             raise AgentError("DeepSeek planner returned a target outside the approved goal.")
         if decision.action != "tap":
             target = None

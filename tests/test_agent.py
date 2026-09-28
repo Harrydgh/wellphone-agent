@@ -130,6 +130,35 @@ class AgentTests(unittest.TestCase):
         self.assertEqual(goal.target_label, "WLAN")
         self.assertEqual(goal.allowed_package, "com.android.settings")
 
+    def test_natural_language_goal_parser_supports_safe_settings_tasks(self) -> None:
+        cases = {
+            "打开蓝牙设置": "蓝牙",
+            "打开移动网络": "移动网络",
+            "查看我的设备": "我的设备",
+            "进入更多连接": "更多连接",
+        }
+        for task, expected_target in cases.items():
+            with self.subTest(task=task):
+                self.assertEqual(parse_safe_goal(task).target_label, expected_target)
+
+    def test_subsettings_goal_requires_matching_page_title(self) -> None:
+        goal = parse_safe_goal("打开蓝牙设置")
+        self.assertFalse(goal.is_satisfied(page(label="蓝牙")))
+        self.assertTrue(goal.is_satisfied(page(activity=".SubSettings", label="蓝牙")))
+        self.assertFalse(goal.is_satisfied(page(activity=".SubSettings", label="移动网络")))
+
+    def test_goal_accepts_only_explicit_additional_system_package(self) -> None:
+        goal = parse_safe_goal("打开移动网络")
+        phone_page = page(activity=".settings.MobileNetworkSettings", label="移动网络")
+        phone_page = PageState(
+            **{**phone_page.__dict__, "current_app": "com.android.phone"}
+        )
+        self.assertTrue(goal.is_satisfied(phone_page))
+        unsafe_page = PageState(
+            **{**phone_page.__dict__, "current_app": "com.example.unapproved"}
+        )
+        self.assertFalse(goal.is_satisfied(unsafe_page))
+
     def test_natural_language_goal_parser_rejects_unapproved_task(self) -> None:
         with self.assertRaisesRegex(AgentError, "只开放"):
             parse_safe_goal("删除账号")
@@ -142,6 +171,19 @@ class AgentTests(unittest.TestCase):
     def test_planner_scrolls_when_goal_is_not_visible(self) -> None:
         action = SettingsPlanner().plan(GOAL, page(label=None), ())
         self.assertEqual(action.kind, "scroll_down")
+
+    def test_planner_uses_only_goal_scoped_navigation_candidates(self) -> None:
+        multi_step_goal = AgentGoal(
+            "打开 VPN 设置",
+            "com.android.settings",
+            "VPN",
+            ("VpnSettings",),
+            allowed_tap_targets=("更多连接", "VPN"),
+        )
+        action = SettingsPlanner().plan(
+            multi_step_goal, page(label="更多连接"), ()
+        )
+        self.assertEqual(action, AgentAction("tap", "当前页面存在允许点击的“更多连接”。", "更多连接"))
 
     def test_policy_rejects_planner_tapping_another_target(self) -> None:
         with self.assertRaises(AgentError):
