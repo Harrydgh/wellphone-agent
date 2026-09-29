@@ -274,6 +274,90 @@ class AppTaskTests(unittest.TestCase):
             ("库迪咖啡经典拿铁", "库迪咖啡", "经典拿铁"),
         )
 
+    def test_first_match_strategy_selects_top_real_product_not_ad_or_store(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        advertisement = candidate(
+            "广告 鲜肉包子",
+            candidate_id="advertisement",
+            confirmation=True,
+            bounds=(20, 350, 1000, 520),
+        )
+        store = candidate(
+            "老台门鲜肉包子店",
+            candidate_id="store",
+            confirmation=True,
+            bounds=(20, 530, 1000, 680),
+        )
+        first_product = candidate(
+            "鲜肉包子",
+            candidate_id="first-product",
+            confirmation=True,
+            bounds=(200, 700, 900, 850),
+        )
+        second_product = candidate(
+            "鲜肉包子 6个装",
+            candidate_id="second-product",
+            confirmation=True,
+            bounds=(200, 1000, 900, 1150),
+        )
+        task = meituan_food_task(
+            "鲜肉包子",
+            selection_strategy="first_match",
+            specification_policy="default",
+        )
+        action = planner.plan(
+            task,
+            understanding(
+                "results",
+                candidates=(
+                    second_product,
+                    store,
+                    advertisement,
+                    first_product,
+                ),
+            ),
+            (),
+        )
+        self.assertEqual(action.candidate_id, "first-product")
+        self.assertIn("第一个", action.reason)
+        self.assertEqual(model.calls, [])
+
+    def test_first_match_strategy_accepts_semantic_character_overlap(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        store = candidate(
+            "爱已成粥(河北店)",
+            candidate_id="store",
+            confirmation=True,
+            bounds=(20, 430, 1000, 620),
+        )
+        meat_bun = candidate(
+            "猪肉小包(5个)",
+            candidate_id="meat-bun",
+            confirmation=True,
+            bounds=(650, 700, 900, 900),
+        )
+        unrelated = candidate(
+            "老面馒头",
+            candidate_id="unrelated",
+            confirmation=True,
+            bounds=(200, 650, 500, 900),
+        )
+        task = meituan_food_task("鲜肉包子", selection_strategy="first_match")
+        state = understanding(
+            "results", candidates=(store, unrelated, meat_bun)
+        )
+        scoped = task.candidates(state)
+        self.assertEqual([item.candidate_id for item in scoped], ["meat-bun"])
+        action = planner.plan(task, state, ())
+        self.assertEqual(action.candidate_id, "meat-bun")
+        self.assertEqual(model.calls, [])
+
+    def test_task_rejects_quantity_greater_than_one(self) -> None:
+        with self.assertRaisesRegex(AgentError, "只支持.*1 份"):
+            meituan_food_task("鲜肉包子", quantity=2)
+
     def test_search_layout_is_exposed_as_search_box_without_old_query(self) -> None:
         task = meituan_food_task("库迪咖啡经典拿铁")
         old_query = PerceivedElement(
@@ -695,6 +779,56 @@ class AppTaskTests(unittest.TestCase):
         self.assertTrue(
             task.is_satisfied(
                 understanding("cart", elements=(product, checkout)),
+                (),
+            )
+        )
+
+    def test_task_accepts_item_below_store_minimum_order_without_duplicate(self) -> None:
+        product = PerceivedElement(
+            text="酱香猪肉包(1个)(力推新品)",
+            bounds=(60, 1080, 720, 1160),
+            source="uiautomator",
+            confidence=1.0,
+            clickable=False,
+            enabled=True,
+        )
+        minimum = PerceivedElement(
+            text="差¥16.2起送",
+            bounds=(760, 1740, 1040, 1840),
+            source="uiautomator",
+            confidence=1.0,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task(
+            "鲜肉包子",
+            selection_strategy="first_match",
+            specification_policy="default",
+        )
+        self.assertTrue(
+            task.is_satisfied(
+                understanding("product", elements=(product, minimum)),
+                ("加入购物车",),
+            )
+        )
+        self.assertTrue(
+            task.is_satisfied(
+                understanding("product", elements=(product, minimum)),
+                (),
+            )
+        )
+
+        other = PerceivedElement(
+            text="八宝粥",
+            bounds=(60, 1080, 720, 1160),
+            source="uiautomator",
+            confidence=1.0,
+            clickable=False,
+            enabled=True,
+        )
+        self.assertFalse(
+            task.is_satisfied(
+                understanding("product", elements=(other, minimum)),
                 (),
             )
         )

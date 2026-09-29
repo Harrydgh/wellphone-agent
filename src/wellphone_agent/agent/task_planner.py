@@ -245,16 +245,38 @@ class DeepSeekTaskPlanner:
         matched = tuple(
             item
             for item in action_candidates
-            if any(term.casefold() in item.label.casefold() for term in task.query_terms)
+            if task.label_matches_query(item.label)
         )
         product_term = task.query_terms[-1].casefold()
         executable_product_matches = tuple(
             item
             for item in matched
             if item.executable
-            and product_term in item.label.casefold()
+            and (
+                task.selection_strategy == "first_match"
+                or product_term in item.label.casefold()
+            )
             and item.bounds[1] >= 300
         )
+        if task.selection_strategy == "first_match":
+            real_products = tuple(
+                item
+                for item in executable_product_matches
+                if "广告" not in item.label
+                and "推广" not in item.label
+                and "点击 发起搜索" not in item.label
+                and not item.label.rstrip("）)").endswith("店")
+            )
+            if real_products:
+                first = min(
+                    real_products,
+                    key=lambda item: (item.bounds[1], item.bounds[0]),
+                )
+                return TaskAction(
+                    kind="tap_candidate",
+                    candidate_id=first.candidate_id,
+                    reason="按页面从上到下选择第一个非广告的真实匹配商品。",
+                )
         if len(executable_product_matches) == 1:
             return TaskAction(
                 kind="tap_candidate",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from .actions import ActionController
 from .adb import AdbClient, ensure_connected
@@ -28,8 +29,16 @@ def run_meituan_agent(
     query: str,
     model: str,
     monitor_main_display: bool = False,
+    selection_strategy: Literal["exact_match", "first_match"] = "exact_match",
+    quantity: int = 1,
+    specification_policy: Literal["default", "confirm"] = "confirm",
 ) -> tuple[TaskRunResult, Path, Path | None]:
-    task = meituan_food_task(query)
+    task = meituan_food_task(
+        query,
+        selection_strategy=selection_strategy,
+        quantity=quantity,
+        specification_policy=specification_policy,
+    )
     adb = AdbClient(find_adb())
     device = ensure_connected(adb, preferred_serial)
     scrcpy = find_scrcpy()
@@ -144,6 +153,9 @@ def run_meituan_agent(
                     else result.reason if result is not None else "任务未启动。"
                 ),
                 "query": task.query,
+                "selection_strategy": task.selection_strategy,
+                "quantity": task.quantity,
+                "specification_policy": task.specification_policy,
                 "task_package": task.allowed_package,
                 "started_at": started_at.isoformat(),
                 "finished_at": finished_at.isoformat(),

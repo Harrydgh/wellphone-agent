@@ -17,6 +17,7 @@ from .langgraph_workflow import (
 )
 from .openai_planner import OpenAIPlanner
 from .planner import SettingsPlanner
+from .shopping_intent import DeepSeekShoppingIntentParser, ShoppingIntent
 from .task_planner import (
     DeepSeekTaskDecision,
     DeepSeekTaskPlanner,
@@ -41,11 +42,13 @@ __all__ = [
     "AgentTransition",
     "DeepSeekActionDecision",
     "DeepSeekPlanner",
+    "DeepSeekShoppingIntentParser",
     "LangGraphAgentLoop",
     "OpenAIPlanner",
     "PhoneAgentState",
     "SAFE_SETTINGS_GOALS",
     "SettingsPlanner",
+    "ShoppingIntent",
     "AppTask",
     "AppTaskSafetyPolicy",
     "DeepSeekTaskDecision",

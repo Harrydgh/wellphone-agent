@@ -9,7 +9,7 @@ from pathlib import Path
 from .actions import UnsafeActionError
 from .adb import AdbClient, AdbError, ensure_connected
 from .agent.core import AgentError
-from .agent import SAFE_SETTINGS_GOALS
+from .agent import DeepSeekShoppingIntentParser, SAFE_SETTINGS_GOALS
 from .agent_demo import run_agent_demo, run_ai_agent_demo, run_langgraph_agent_demo
 from .control_demo import format_control_result, run_control_demo
 from .demo import run_browser_demo
@@ -204,6 +204,44 @@ def command_meituan_agent(query: str, model: str, concurrent: bool) -> int:
     return 0
 
 
+def command_shopping_agent(
+    instruction: str,
+    model: str,
+    concurrent: bool,
+    dry_run: bool,
+) -> int:
+    intent = DeepSeekShoppingIntentParser(model=model).parse(instruction)
+    print("已将自然语言任务解析为受控购物目标：")
+    print(f"搜索词: {intent.query}")
+    print(f"选择策略: {intent.selection_strategy}")
+    print(f"数量: {intent.quantity}")
+    print(f"规格策略: {intent.specification_policy}")
+    print("停止位置: 购物车（不结算、不支付）")
+    if dry_run:
+        print("预览完成：未连接手机，未执行任何动作。")
+        return 0
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    result, log_path, report_path = run_meituan_agent(
+        project_root=project_root,
+        preferred_serial=preferred,
+        query=intent.query,
+        model=model,
+        monitor_main_display=concurrent,
+        selection_strategy=intent.selection_strategy,
+        quantity=intent.quantity,
+        specification_policy=intent.specification_policy,
+    )
+    print("通用购物任务已在购物车边界安全停止。")
+    print(f"步骤数: {result.steps}")
+    print(f"最终页面: {result.final_understanding.screen.kind}")
+    print(f"截图: {result.final_understanding.screenshot}")
+    print(f"日志: {log_path}")
+    if report_path is not None:
+        print(f"并发验收报告: {report_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wellphone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -281,6 +319,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="monitor display 0 and write a concurrency acceptance report",
     )
+    shopping_agent = subparsers.add_parser(
+        "shopping-agent",
+        help="understand a natural-language Meituan shopping task",
+    )
+    shopping_agent.add_argument("--task", required=True)
+    shopping_agent.add_argument(
+        "--model",
+        default=os.environ.get("WELLPHONE_DEEPSEEK_MODEL", "deepseek-flash"),
+    )
+    shopping_agent.add_argument(
+        "--concurrent",
+        action="store_true",
+        help="monitor display 0 and write a concurrency acceptance report",
+    )
+    shopping_agent.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="parse and display the shopping intent without connecting a phone",
+    )
     return parser
 
 
@@ -308,6 +365,13 @@ def main(argv: list[str] | None = None) -> int:
             return command_langgraph_agent(args.task, args.model)
         if args.command == "meituan-agent":
             return command_meituan_agent(args.query, args.model, args.concurrent)
+        if args.command == "shopping-agent":
+            return command_shopping_agent(
+                args.task,
+                args.model,
+                args.concurrent,
+                args.dry_run,
+            )
     except (
         AdbError,
         AgentError,

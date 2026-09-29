@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from ..perception.candidates import CandidateAction
 from ..perception.understanding import PageUnderstanding
@@ -18,6 +19,9 @@ class AppTask:
     allowed_package: str
     query: str
     navigation_labels: tuple[str, ...]
+    selection_strategy: Literal["exact_match", "first_match"] = "exact_match"
+    quantity: int = 1
+    specification_policy: Literal["default", "confirm"] = "confirm"
     max_steps: int = 12
 
     BLOCKED_TERMS = (
@@ -50,6 +54,8 @@ class AppTask:
             raise AgentError("商品搜索词必须为 1 到 120 字节且不能包含控制字符。")
         if self.max_steps <= 0:
             raise AgentError("任务最大步骤数必须为正数。")
+        if self.quantity != 1:
+            raise AgentError("当前安全版本只支持每次加购 1 份商品。")
         object.__setattr__(self, "query", query)
 
     @staticmethod
@@ -83,9 +89,29 @@ class AppTask:
             for marker in self.navigation_labels
         ):
             return True
-        return understanding.screen.kind in {"results", "store", "product"} and any(
-            term.casefold() in label.casefold() for term in self.query_terms
+        return (
+            understanding.screen.kind in {"results", "store", "product"}
+            and self.label_matches_query(label)
         )
+
+    def label_matches_query(self, label: str) -> bool:
+        normalized_label = label.casefold()
+        if any(term.casefold() in normalized_label for term in self.query_terms):
+            return True
+        if self.selection_strategy != "first_match":
+            return False
+        ignored = set("的一个份只装款新鲜经典招牌")
+        query_characters = {
+            character
+            for character in self.query
+            if "\u4e00" <= character <= "\u9fff" and character not in ignored
+        }
+        label_characters = {
+            character
+            for character in label
+            if "\u4e00" <= character <= "\u9fff" and character not in ignored
+        }
+        return len(query_characters & label_characters) >= 2
 
     @property
     def query_terms(self) -> tuple[str, ...]:
@@ -137,10 +163,7 @@ class AppTask:
             label = self._canonical_label(candidate.label)
             candidate_bounds = tuple(candidate.bounds)
             identity = (label, candidate_bounds)
-            query_match = any(
-                term.casefold() in label.casefold()
-                for term in self.query_terms
-            )
+            query_match = self.label_matches_query(label)
             is_search_header = (
                 understanding.screen.kind in {"results", "store", "product"}
                 and label.casefold() == self.query.casefold()
@@ -193,9 +216,7 @@ class AppTask:
             digest = hashlib.sha256(
                 f"{label}|{element_bounds}|{element.source}|task".encode("utf-8")
             ).hexdigest()[:12]
-            query_match = any(
-                term.casefold() in label.casefold() for term in self.query_terms
-            )
+            query_match = self.label_matches_query(label)
             trusted_ocr_button = self._trusted_ocr_button(
                 label, element.source, element.confidence
             )
@@ -248,31 +269,53 @@ class AppTask:
     ) -> bool:
 
         texts = tuple(element.text.strip() for element in understanding.elements)
-        has_query_match = any(
-            term.casefold() in text.casefold()
-            for term in self.query_terms
+        has_query_match = any(self.label_matches_query(text) for text in texts)
+        has_selected_specs = any("已选规格" in text for text in texts)
+        has_cart_total = any(
+            "去结算" in text
+            or ("差" in text and "起送" in text)
             for text in texts
         )
-        has_selected_specs = any("已选规格" in text for text in texts)
-        has_cart_total = any("去结算" in text for text in texts)
         add_button_gone = not any("加入购物车" in text for text in texts)
         if understanding.screen.kind == "cart":
             return has_query_match and has_cart_total and add_button_gone
         return (
             understanding.screen.kind in {"product", "store"}
             and (has_query_match or not require_query)
-            and has_selected_specs
+            and (has_selected_specs or has_query_match)
             and has_cart_total
             and add_button_gone
         )
 
 
-def meituan_food_task(query: str) -> AppTask:
+def meituan_food_task(
+    query: str,
+    *,
+    selection_strategy: Literal["exact_match", "first_match"] = "exact_match",
+    quantity: int = 1,
+    specification_policy: Literal["default", "confirm"] = "confirm",
+) -> AppTask:
+    strategy_text = (
+        "选择第一个真实匹配商品"
+        if selection_strategy == "first_match"
+        else "选择明确匹配商品"
+    )
+    specification_text = (
+        "保持默认规格"
+        if specification_policy == "default"
+        else "规格需要确认"
+    )
     return AppTask(
         task_id="meituan_food_to_cart",
-        description=f"在美团搜索“{query.strip()}”并加入购物车，验证购物车状态后停止",
+        description=(
+            f"在美团搜索“{query.strip()}”，{strategy_text}，"
+            f"{specification_text}，加购 1 份并在购物车停止"
+        ),
         allowed_package=MEITUAN_PACKAGE,
         query=query,
+        selection_strategy=selection_strategy,
+        quantity=quantity,
+        specification_policy=specification_policy,
         navigation_labels=(
             "暂不升级",
             "首页",
