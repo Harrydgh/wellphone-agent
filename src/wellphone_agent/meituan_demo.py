@@ -14,6 +14,7 @@ from .agent import (
     meituan_food_task,
 )
 from .concurrency import MainDisplayMonitor, write_acceptance_report
+from .confirmation import request_terminal_confirmation
 from .perception.frame_capture import VirtualDisplayCapture
 from .perception.state import AndroidPageInspector, PageStateTracker, UIHierarchyInspector
 from .perception.understanding import PageUnderstandingEngine
@@ -59,11 +60,19 @@ def run_meituan_agent(
         print(f"来源: {request.get('source')}")
         print(f"风险: {request.get('risk_level')}")
         print(f"原因: {request.get('reason')}")
-        try:
-            answer = input("请输入 yes 确认，其他内容拒绝: ")
-        except EOFError:
-            return False
-        return answer.strip().lower() in {"yes", "y"}
+        return request_terminal_confirmation(
+            "\n".join(
+                (
+                    f"任务：{request.get('task')}",
+                    f"目标：{request.get('target')}",
+                    f"来源：{request.get('source')}",
+                    f"风险：{request.get('risk_level')}",
+                    f"原因：{request.get('reason')}",
+                    "",
+                    "是否允许执行这个动作？",
+                )
+            )
+        )
 
     try:
         display_id = session.start()
