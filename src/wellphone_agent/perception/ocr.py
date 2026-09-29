@@ -49,7 +49,7 @@ class RapidOCREngine:
                 raise OCRError(
                     "RapidOCR is not installed. Run scripts/setup.ps1 first."
                 ) from exc
-            self._engine = RapidOCR()
+            self._engine = RapidOCR(params={"Global.log_level": "warning"})
         return self._engine
 
     @staticmethod

@@ -305,6 +305,13 @@ class LangGraphAppTaskLoop:
                 candidate_id=action.candidate_id,
                 screen=understanding.screen.kind,
             )
+        self._log(
+            "task_action_executing",
+            step=state["step"] + 1,
+            action=action.kind,
+            target=candidate.label if candidate else None,
+            screen=understanding.screen.kind,
+        )
         if action.kind == "tap_candidate":
             assert candidate is not None
             left, top, right, bottom = candidate.bounds
@@ -340,6 +347,15 @@ class LangGraphAppTaskLoop:
             before_page.current_activity != page.current_activity
             or before_page.perceptual_hash != page.perceptual_hash
             or before.screen.kind != after.screen.kind
+        )
+        self._log(
+            "task_action_verified",
+            step=step,
+            action=action.kind,
+            target=candidate.label if candidate else None,
+            before_screen=before.screen.kind,
+            after_screen=after.screen.kind,
+            page_changed=changed,
         )
         transition = TaskTransition(
             step=step,

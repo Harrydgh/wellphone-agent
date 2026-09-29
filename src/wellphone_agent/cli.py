@@ -16,6 +16,7 @@ from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
 from .observe_demo import format_observation_result, run_observation_demo
 from .meituan_demo import run_meituan_agent
+from .live import LiveDisplayError
 from .perception.frame_capture import FrameCaptureError
 from .perception.ocr import OCRError
 from .scrcpy_control import ScrcpyControlError
@@ -183,7 +184,9 @@ def command_langgraph_agent(task: str, model: str) -> int:
     return 0
 
 
-def command_meituan_agent(query: str, model: str, concurrent: bool) -> int:
+def command_meituan_agent(
+    query: str, model: str, concurrent: bool, live: bool
+) -> int:
     preferred = os.environ.get("WELLPHONE_SERIAL") or None
     project_root = Path(__file__).resolve().parents[2]
     result, log_path, report_path = run_meituan_agent(
@@ -192,6 +195,7 @@ def command_meituan_agent(query: str, model: str, concurrent: bool) -> int:
         query=query,
         model=model,
         monitor_main_display=concurrent,
+        live=live,
     )
     print("美团外卖任务已到达购物车并安全停止。")
     print(f"搜索词: {query}")
@@ -209,6 +213,7 @@ def command_shopping_agent(
     model: str,
     concurrent: bool,
     dry_run: bool,
+    live: bool,
 ) -> int:
     intent = DeepSeekShoppingIntentParser(model=model).parse(instruction)
     print("已将自然语言任务解析为受控购物目标：")
@@ -231,6 +236,7 @@ def command_shopping_agent(
         selection_strategy=intent.selection_strategy,
         quantity=intent.quantity,
         specification_policy=intent.specification_policy,
+        live=live,
     )
     print("通用购物任务已在购物车边界安全停止。")
     print(f"步骤数: {result.steps}")
@@ -319,6 +325,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="monitor display 0 and write a concurrency acceptance report",
     )
+    meituan_agent.add_argument(
+        "--live",
+        action="store_true",
+        help="show a read-only virtual display and live terminal progress",
+    )
     shopping_agent = subparsers.add_parser(
         "shopping-agent",
         help="understand a natural-language Meituan shopping task",
@@ -337,6 +348,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="parse and display the shopping intent without connecting a phone",
+    )
+    shopping_agent.add_argument(
+        "--live",
+        action="store_true",
+        help="show a read-only virtual display and live terminal progress",
     )
     return parser
 
@@ -364,13 +380,16 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "langgraph-agent":
             return command_langgraph_agent(args.task, args.model)
         if args.command == "meituan-agent":
-            return command_meituan_agent(args.query, args.model, args.concurrent)
+            return command_meituan_agent(
+                args.query, args.model, args.concurrent, args.live
+            )
         if args.command == "shopping-agent":
             return command_shopping_agent(
                 args.task,
                 args.model,
                 args.concurrent,
                 args.dry_run,
+                args.live,
             )
     except (
         AdbError,
@@ -381,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         FrameCaptureError,
         OCRError,
         ScrcpyControlError,
+        LiveDisplayError,
         RuntimeError,
         ValueError,
     ) as exc:

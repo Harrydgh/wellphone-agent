@@ -3,7 +3,8 @@ param(
     [string]$Task,
     [string]$Model = $(if ($env:WELLPHONE_DEEPSEEK_MODEL) { $env:WELLPHONE_DEEPSEEK_MODEL } else { "deepseek-flash" }),
     [switch]$Concurrent,
-    [switch]$PlanOnly
+    [switch]$PlanOnly,
+    [switch]$Live
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,9 @@ if ($Concurrent) {
 }
 if ($PlanOnly) {
     $arguments += "--dry-run"
+}
+if ($Live) {
+    $arguments += "--live"
 }
 
 Push-Location $projectRoot

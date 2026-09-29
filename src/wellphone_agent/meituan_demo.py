@@ -15,6 +15,7 @@ from .agent import (
 )
 from .concurrency import MainDisplayMonitor, write_acceptance_report
 from .confirmation import request_terminal_confirmation
+from .live import LiveDisplayViewer, LiveProgressReporter
 from .perception.frame_capture import VirtualDisplayCapture
 from .perception.state import AndroidPageInspector, PageStateTracker, UIHierarchyInspector
 from .perception.understanding import PageUnderstandingEngine
@@ -33,6 +34,7 @@ def run_meituan_agent(
     selection_strategy: Literal["exact_match", "first_match"] = "exact_match",
     quantity: int = 1,
     specification_policy: Literal["default", "confirm"] = "confirm",
+    live: bool = False,
 ) -> tuple[TaskRunResult, Path, Path | None]:
     task = meituan_food_task(
         query,
@@ -43,8 +45,15 @@ def run_meituan_agent(
     adb = AdbClient(find_adb())
     device = ensure_connected(adb, preferred_serial)
     scrcpy = find_scrcpy()
-    log = RunLogger(project_root / "logs")
+    reporter = LiveProgressReporter() if live else None
+    if reporter is not None:
+        reporter.start()
+    log = RunLogger(
+        project_root / "logs",
+        listener=reporter.handle if reporter is not None else None,
+    )
     session = ScrcpyControlSession(adb, scrcpy, device.serial)
+    viewer: LiveDisplayViewer | None = None
     monitor: MainDisplayMonitor | None = None
     report_path: Path | None = None
     result: TaskRunResult | None = None
@@ -77,6 +86,10 @@ def run_meituan_agent(
     try:
         display_id = session.start()
         log.write("display_ready", display_id=display_id, mode="meituan_agent")
+        if live:
+            viewer = LiveDisplayViewer(scrcpy, device.serial, display_id)
+            viewer.start()
+            log.write("live_viewer_started", display_id=display_id, read_only=True)
         inspector = AndroidPageInspector(adb, device.serial)
         if monitor_main_display:
             monitor = MainDisplayMonitor(
@@ -128,6 +141,14 @@ def run_meituan_agent(
     finally:
         if monitor is not None:
             monitor.stop()
+        if viewer is not None:
+            try:
+                viewer.stop()
+                log.write("live_viewer_stopped")
+            except Exception as exc:
+                log.write("live_viewer_stop_failed", error=type(exc).__name__)
+                if failure is None:
+                    failure = exc
         try:
             session.stop()
             log.write("display_stopped")
@@ -189,6 +210,8 @@ def run_meituan_agent(
                 project_root / "reports", payload
             )
             log.write("acceptance_report_written", path=str(report_path))
+        if reporter is not None:
+            reporter.close()
 
     if failure is not None:
         detail = str(failure)
