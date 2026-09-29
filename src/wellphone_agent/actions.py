@@ -22,6 +22,8 @@ class VirtualDisplayInput(Protocol):
 
     def type_text(self, text: str) -> None: ...
 
+    def paste_text(self, text: str) -> None: ...
+
 
 ANDROID_KEYCODES = {
     "KEYCODE_HOME": 3,
@@ -30,6 +32,7 @@ ANDROID_KEYCODES = {
     "KEYCODE_DEL": 67,
     "KEYCODE_TAB": 61,
     "KEYCODE_ESCAPE": 111,
+    "KEYCODE_MOVE_END": 123,
 }
 
 
@@ -105,6 +108,38 @@ class ActionController:
                 "spaces, dot, underscore and hyphen."
             )
         self._require_input().type_text(text)
+
+    def type_text(self, text: str) -> None:
+        """Type a user-supplied search phrase through the bound virtual display."""
+        normalized = text.strip()
+        if (
+            not normalized
+            or len(normalized.encode("utf-8")) > 120
+            or any(ord(character) < 32 for character in normalized)
+        ):
+            raise UnsafeActionError(
+                "Search text must be 1 to 120 UTF-8 bytes without control characters."
+            )
+        self._require_input().type_text(normalized)
+
+    def replace_text(self, text: str, *, max_existing_characters: int = 80) -> None:
+        """Replace focused field content without using shell or clipboard input."""
+        if max_existing_characters <= 0 or max_existing_characters > 120:
+            raise UnsafeActionError("Text replacement delete limit is invalid.")
+        normalized = text.strip()
+        if (
+            not normalized
+            or len(normalized.encode("utf-8")) > 120
+            or any(ord(character) < 32 for character in normalized)
+        ):
+            raise UnsafeActionError(
+                "Search text must be 1 to 120 UTF-8 bytes without control characters."
+            )
+        backend = self._require_input()
+        backend.keyevent(ANDROID_KEYCODES["KEYCODE_MOVE_END"])
+        for _ in range(max_existing_characters):
+            backend.keyevent(ANDROID_KEYCODES["KEYCODE_DEL"])
+        backend.paste_text(normalized)
 
     def open_url(self, url: str, package: str) -> None:
         parsed = urlparse(url)

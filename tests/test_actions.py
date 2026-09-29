@@ -50,6 +50,27 @@ class ActionControllerTests(unittest.TestCase):
         with self.assertRaises(UnsafeActionError):
             controller.tap(100, 200)
 
+    def test_replace_text_clears_focused_field_through_scrcpy(self) -> None:
+        class FakeInput:
+            def __init__(self) -> None:
+                self.keycodes: list[int] = []
+                self.pasted: list[str] = []
+
+            def keyevent(self, keycode: int) -> None:
+                self.keycodes.append(keycode)
+
+            def paste_text(self, text: str) -> None:
+                self.pasted.append(text)
+
+        backend = FakeInput()
+        controller = ActionController(
+            FakeAdb(), "device", 7, backend  # type: ignore[arg-type]
+        )
+        controller.replace_text("库迪咖啡经典拿铁", max_existing_characters=5)
+        self.assertEqual(backend.keycodes[0], 123)
+        self.assertEqual(backend.keycodes[1:], [67] * 5)
+        self.assertEqual(backend.pasted, ["库迪咖啡经典拿铁"])
+
     def test_rejects_unsafe_url_scheme(self) -> None:
         controller = ActionController(FakeAdb(), "device", 7)  # type: ignore[arg-type]
         with self.assertRaises(UnsafeActionError):

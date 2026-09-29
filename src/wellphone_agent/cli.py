@@ -15,6 +15,7 @@ from .control_demo import format_control_result, run_control_demo
 from .demo import run_browser_demo
 from .display import VirtualDisplayError, VirtualDisplaySession
 from .observe_demo import format_observation_result, run_observation_demo
+from .meituan_demo import run_meituan_agent
 from .perception.frame_capture import FrameCaptureError
 from .perception.ocr import OCRError
 from .scrcpy_control import ScrcpyControlError
@@ -182,6 +183,24 @@ def command_langgraph_agent(task: str, model: str) -> int:
     return 0
 
 
+def command_meituan_agent(query: str, model: str) -> int:
+    preferred = os.environ.get("WELLPHONE_SERIAL") or None
+    project_root = Path(__file__).resolve().parents[2]
+    result, log_path = run_meituan_agent(
+        project_root=project_root,
+        preferred_serial=preferred,
+        query=query,
+        model=model,
+    )
+    print("美团外卖任务已到达购物车并安全停止。")
+    print(f"搜索词: {query}")
+    print(f"步骤数: {result.steps}")
+    print(f"最终页面: {result.final_understanding.screen.kind}")
+    print(f"截图: {result.final_understanding.screenshot}")
+    print(f"日志: {log_path}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="wellphone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -245,6 +264,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=os.environ.get("WELLPHONE_DEEPSEEK_MODEL", "deepseek-flash"),
     )
+    meituan_agent = subparsers.add_parser(
+        "meituan-agent",
+        help="search a product in Meituan and stop after reaching the cart",
+    )
+    meituan_agent.add_argument("--query", required=True)
+    meituan_agent.add_argument(
+        "--model",
+        default=os.environ.get("WELLPHONE_DEEPSEEK_MODEL", "deepseek-flash"),
+    )
     return parser
 
 
@@ -270,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_ai_agent(args.task, args.model)
         if args.command == "langgraph-agent":
             return command_langgraph_agent(args.task, args.model)
+        if args.command == "meituan-agent":
+            return command_meituan_agent(args.query, args.model)
     except (
         AdbError,
         AgentError,

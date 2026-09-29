@@ -386,6 +386,19 @@ class ScrcpyControlSession:
             raise ScrcpyControlError("Text must contain 1 to 300 UTF-8 bytes.")
         self._send(bytes([1]) + struct.pack(">I", len(encoded)) + encoded)
 
+    def paste_text(self, text: str) -> None:
+        """Paste UTF-8 text through scrcpy's clipboard control message."""
+        encoded = text.encode("utf-8")
+        if not encoded or len(encoded) > 300:
+            raise ScrcpyControlError("Clipboard text must contain 1 to 300 UTF-8 bytes.")
+        sequence = 0
+        paste = 1
+        self._send(
+            bytes([9])
+            + struct.pack(">QBI", sequence, paste, len(encoded))
+            + encoded
+        )
+
     def start_app(self, package: str) -> None:
         encoded = package.encode("utf-8")
         if not encoded or len(encoded) > 255:

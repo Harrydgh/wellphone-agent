@@ -125,6 +125,48 @@ class UnderstandingTests(unittest.TestCase):
         self.assertEqual(classifier.classify(mixed).kind, "payment")
         self.assertEqual(classifier.classify((element("搜索系统设置项"),)).kind, "unknown")
 
+    def test_bottom_navigation_cart_label_does_not_classify_home_as_cart(self) -> None:
+        classifier = ScreenClassifier()
+        home = element("推荐", bounds=(10, 200, 200, 260))
+        cart_tab = element("购物车", bounds=(700, 1800, 850, 1900))
+        self.assertEqual(classifier.classify((home, cart_tab)).kind, "home")
+
+    def test_meituan_home_activity_outweighs_delivery_fee_promotion(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element("外卖", bounds=(10, 200, 200, 260)),
+            element("0配送费", bounds=(10, 500, 200, 560)),
+            element("购物车", bounds=(700, 1800, 850, 1900)),
+        )
+        result = classifier.classify(
+            items, "com.meituan.android.pt.homepage.activity.MainActivity"
+        )
+        self.assertEqual(result.kind, "home")
+
+    def test_sensitive_signal_outweighs_meituan_home_activity(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element("外卖", bounds=(10, 200, 200, 260)),
+            element("立即支付", bounds=(700, 1200, 1000, 1300)),
+        )
+        result = classifier.classify(
+            items, "com.meituan.android.pt.homepage.activity.MainActivity"
+        )
+        self.assertEqual(result.kind, "payment")
+
+    def test_cart_body_outweighs_meituan_home_activity(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element("首页", bounds=(10, 1800, 150, 1900)),
+            element("购物车", bounds=(650, 1800, 850, 1900)),
+            element("全选", bounds=(10, 1650, 150, 1720)),
+            element("结算", bounds=(800, 1650, 1030, 1750)),
+        )
+        result = classifier.classify(
+            items, "com.meituan.android.pt.homepage.activity.MainActivity"
+        )
+        self.assertEqual(result.kind, "cart")
+
     def test_candidates_apply_risk_and_source_boundaries(self) -> None:
         candidates = CandidateGenerator().generate(
             (

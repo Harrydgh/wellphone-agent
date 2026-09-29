@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from PIL import Image
+
+from wellphone_agent.agent.core import AgentError
+from wellphone_agent.agent.task_planner import (
+    DeepSeekTaskPlanner,
+    TaskAction,
+    TaskTransition,
+)
+from wellphone_agent.agent.task_workflow import (
+    AppTaskSafetyPolicy,
+    LangGraphAppTaskLoop,
+)
+from wellphone_agent.agent.tasks import MEITUAN_PACKAGE, meituan_food_task
+from wellphone_agent.perception.candidates import CandidateAction
+from wellphone_agent.perception.fusion import PerceivedElement
+from wellphone_agent.perception.ocr import OCRText
+from wellphone_agent.perception.screen_classifier import ScreenClassification
+from wellphone_agent.perception.state import PageState, VisibleElement
+from wellphone_agent.perception.understanding import (
+    PageUnderstanding,
+    PageUnderstandingEngine,
+)
+
+
+def page(*, screenshot: str = "frame.png", frame_hash: str = "a") -> PageState:
+    return PageState(
+        captured_at="now",
+        serial="private-device",
+        display_id=7,
+        current_app=MEITUAN_PACKAGE,
+        current_activity=".FoodActivity",
+        screenshot=screenshot,
+        width=1080,
+        height=1920,
+        sha256=frame_hash,
+        perceptual_hash=frame_hash,
+        changed_from_previous=None,
+        visual_change_ratio=None,
+        consecutive_static_frames=0,
+        is_stale=False,
+    )
+
+
+def candidate(
+    label: str,
+    *,
+    candidate_id: str = "candidate-1",
+    source: str = "uiautomator",
+    confidence: float = 1.0,
+    confirmation: bool = False,
+    bounds: tuple[int, int, int, int] = (100, 200, 300, 300),
+) -> CandidateAction:
+    return CandidateAction(
+        candidate_id=candidate_id,
+        action="tap_visible_target",
+        label=label,
+        bounds=bounds,
+        source=source,
+        confidence=confidence,
+        risk_level="medium" if confirmation else "low",
+        requires_confirmation=confirmation,
+        requires_user_takeover=False,
+        executable=source == "uiautomator",
+    )
+
+
+def understanding(
+    kind: str,
+    *,
+    candidates: tuple[CandidateAction, ...] = (),
+    elements: tuple[PerceivedElement, ...] = (),
+) -> PageUnderstanding:
+    return PageUnderstanding(
+        current_app=MEITUAN_PACKAGE,
+        current_activity=".FoodActivity",
+        screenshot="frame.png",
+        text_source="uiautomator+ocr",
+        ocr_count=0,
+        elements=elements,
+        screen=ScreenClassification(kind, 0.95, (kind,)),  # type: ignore[arg-type]
+        candidates=candidates,
+    )
+
+
+class FakeModel:
+    def __init__(self, decision: object) -> None:
+        self.decision = decision
+        self.calls: list[object] = []
+
+    def invoke(self, messages: object) -> object:
+        self.calls.append(messages)
+        return self.decision
+
+
+class FakeObserver:
+    def __init__(self, pages: list[PageState]) -> None:
+        self.pages = pages
+
+    def observe(self, label: str = "frame") -> PageState:
+        return self.pages.pop(0)
+
+
+class FakeUnderstandingEngine:
+    def __init__(self, values: list[PageUnderstanding]) -> None:
+        self.values = values
+
+    def analyze(self, state: PageState) -> PageUnderstanding:
+        return self.values.pop(0)
+
+
+class FakeActions:
+    display_id = 7
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    def tap(self, x: int, y: int) -> None:
+        self.calls.append(("tap", x, y))
+
+    def swipe(self, *args: object) -> None:
+        self.calls.append(("swipe", *args))
+
+    def keyevent(self, keycode: str) -> None:
+        self.calls.append(("keyevent", keycode))
+
+    def type_text(self, text: str) -> None:
+        self.calls.append(("type_text", text))
+
+    def replace_text(self, text: str) -> None:
+        self.calls.append(("replace_text", text))
+
+
+class SequencePlanner:
+    def __init__(self, actions: list[TaskAction]) -> None:
+        self.actions = actions
+
+    def plan(self, task: object, state: object, history: object) -> TaskAction:
+        return self.actions.pop(0)
+
+
+class AppTaskTests(unittest.TestCase):
+    def test_task_rejects_control_characters(self) -> None:
+        with self.assertRaises(AgentError):
+            meituan_food_task("拿铁\n支付")
+
+    def test_task_candidates_exclude_checkout_and_unrelated_account_controls(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        state = understanding(
+            "product",
+            candidates=(
+                candidate("加入购物车", candidate_id="add", confirmation=True),
+                candidate("去结算", candidate_id="checkout"),
+                candidate("美团月付", candidate_id="credit"),
+            ),
+        )
+        self.assertEqual(
+            [item.candidate_id for item in task.candidates(state)], ["add"]
+        )
+
+    def test_query_matching_ocr_candidate_requires_confirmation(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        match = PerceivedElement(
+            text="经典拿铁",
+            bounds=(20, 430, 300, 500),
+            source="ocr",
+            confidence=0.98,
+            clickable=False,
+            enabled=True,
+        )
+        item = task.candidates(understanding("results", elements=(match,)))[0]
+        self.assertEqual(item.source, "ocr")
+        self.assertTrue(item.requires_confirmation)
+        self.assertFalse(item.executable)
+
+    def test_high_confidence_whitelisted_ocr_button_is_confirmed_and_executable(
+        self,
+    ) -> None:
+        task = meituan_food_task("经典拿铁")
+        select_specs = PerceivedElement(
+            text="选规格",
+            bounds=(926, 1794, 1031, 1839),
+            source="ocr",
+            confidence=0.9999,
+            clickable=False,
+            enabled=True,
+        )
+        item = task.candidates(
+            understanding("product", elements=(select_specs,))
+        )[0]
+        self.assertTrue(item.executable)
+        self.assertTrue(item.requires_confirmation)
+        self.assertEqual(item.risk_level, "medium")
+
+    def test_low_confidence_whitelisted_ocr_button_remains_non_executable(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        select_specs = PerceivedElement(
+            text="选规格",
+            bounds=(926, 1794, 1031, 1839),
+            source="ocr",
+            confidence=0.9,
+            clickable=False,
+            enabled=True,
+        )
+        item = task.candidates(
+            understanding("product", elements=(select_specs,))
+        )[0]
+        self.assertFalse(item.executable)
+
+    def test_specs_modal_normalizes_add_button_and_hides_background_specs(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        selected = PerceivedElement(
+            text="已选规格：超大杯(570ml)、不额外加糖、标准、冰",
+            bounds=(82, 1235, 954, 1271),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        noisy_add = PerceivedElement(
+            text="十加入购物车",
+            bounds=(770, 1396, 980, 1436),
+            source="ocr",
+            confidence=0.92,
+            clickable=False,
+            enabled=True,
+        )
+        background_specs = PerceivedElement(
+            text="选规格",
+            bounds=(928, 1796, 1030, 1839),
+            source="ocr",
+            confidence=0.999,
+            clickable=False,
+            enabled=True,
+        )
+        items = task.candidates(
+            understanding(
+                "product",
+                elements=(selected, noisy_add, background_specs),
+            )
+        )
+        self.assertEqual([item.label for item in items], ["加入购物车"])
+        self.assertTrue(items[0].executable)
+        self.assertTrue(items[0].requires_confirmation)
+
+    def test_results_exclude_top_search_header_and_confirm_product(self) -> None:
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        header = candidate(
+            "库迪咖啡经典拿铁",
+            candidate_id="header",
+            bounds=(95, 103, 1029, 192),
+        )
+        product = candidate(
+            "经典拿铁(超大杯)",
+            candidate_id="product",
+            bounds=(744, 728, 980, 1052),
+        )
+        items = task.candidates(
+            understanding("results", candidates=(header, product))
+        )
+        self.assertEqual([item.candidate_id for item in items], ["product"])
+        self.assertTrue(items[0].requires_confirmation)
+        self.assertEqual(items[0].risk_level, "medium")
+
+    def test_task_extracts_brand_and_product_query_terms(self) -> None:
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertEqual(
+            task.query_terms,
+            ("库迪咖啡经典拿铁", "库迪咖啡", "经典拿铁"),
+        )
+
+    def test_search_layout_is_exposed_as_search_box_without_old_query(self) -> None:
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        old_query = PerceivedElement(
+            text="鲜花店",
+            bounds=(30, 200, 900, 330),
+            source="uiautomator",
+            confidence=1.0,
+            clickable=True,
+            enabled=True,
+            resource_id="com.sankuai.meituan:id/search_layout_area",
+        )
+        items = task.candidates(understanding("home", elements=(old_query,)))
+        self.assertEqual([item.label for item in items], ["搜索框"])
+        self.assertNotIn("鲜花店", str(items))
+
+    def test_planner_closes_upgrade_modal_without_model_call(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        close = candidate("暂不升级", candidate_id="dismiss")
+        action = planner.plan(
+            meituan_food_task("经典拿铁"),
+            understanding("modal", candidates=(close,)),
+            (),
+        )
+        self.assertEqual(action.candidate_id, "dismiss")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_focuses_search_box_locally_on_home(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        action = planner.plan(
+            meituan_food_task("经典拿铁"),
+            understanding(
+                "home", candidates=(candidate("搜索框", candidate_id="search-box"),)
+            ),
+            (),
+        )
+        self.assertEqual(action.candidate_id, "search-box")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_leaves_existing_cart_before_starting_search(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        action = planner.plan(
+            meituan_food_task("经典拿铁"),
+            understanding(
+                "cart", candidates=(candidate("首页", candidate_id="home"),)
+            ),
+            (),
+        )
+        self.assertEqual(action.candidate_id, "home")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_normalizes_safe_deepseek_field_aliases(self) -> None:
+        model = FakeModel(
+            {
+                "action": "tap",
+                "target": "food",
+                "reason": "",
+            }
+        )
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        action = planner.plan(
+            meituan_food_task("经典拿铁"),
+            understanding("home", candidates=(candidate("外卖", candidate_id="food"),)),
+            (),
+        )
+        self.assertEqual(action.kind, "tap_candidate")
+        self.assertEqual(action.candidate_id, "food")
+        self.assertTrue(action.reason)
+
+    def test_planner_prefers_only_executable_product_over_ocr_duplicates(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        product = candidate(
+            "经典拿铁(超大杯)",
+            candidate_id="product",
+            confirmation=True,
+            bounds=(744, 728, 980, 1052),
+        )
+        store_ocr = candidate(
+            "库迪咖啡(亳州花戏楼店)",
+            candidate_id="store-ocr",
+            source="ocr",
+            confirmation=True,
+            bounds=(271, 438, 689, 481),
+        )
+        product_ocr = candidate(
+            "经典拿铁(超大杯)",
+            candidate_id="product-ocr",
+            source="ocr",
+            confirmation=True,
+            bounds=(740, 965, 943, 1002),
+        )
+        action = planner.plan(
+            meituan_food_task("库迪咖啡经典拿铁"),
+            understanding(
+                "results", candidates=(product, store_ocr, product_ocr)
+            ),
+            (),
+        )
+        self.assertEqual(action.candidate_id, "product")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_rejects_candidate_id_outside_task_scope(self) -> None:
+        model = FakeModel(
+            {"action": "tap_candidate", "candidate_id": "outside", "reason": "test"}
+        )
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        with self.assertRaisesRegex(AgentError, "候选列表之外"):
+            planner.plan(
+                meituan_food_task("经典拿铁"),
+                understanding("home", candidates=(candidate("外卖"),)),
+                (),
+            )
+
+    def test_planner_does_not_offer_cart_before_an_item_was_added(self) -> None:
+        model = FakeModel({"action": "abort", "reason": "inspect"})
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        planner.plan(
+            meituan_food_task("经典拿铁"),
+            understanding(
+                "home",
+                candidates=(
+                    candidate("外卖", candidate_id="food"),
+                    candidate("购物车", candidate_id="cart"),
+                ),
+            ),
+            (),
+        )
+        self.assertIn("food", str(model.calls[0]))
+        self.assertNotIn('"candidate_id": "cart"', str(model.calls[0]))
+
+    def test_policy_rejects_low_confidence_ocr_coordinates(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        low = candidate(
+            "经典拿铁",
+            source="ocr",
+            confidence=0.6,
+            confirmation=True,
+            bounds=(100, 400, 300, 500),
+        )
+        state = understanding("results", candidates=(low,))
+        action = TaskAction(
+            kind="tap_candidate", reason="test", candidate_id=low.candidate_id
+        )
+        with self.assertRaisesRegex(AgentError, "置信度不足"):
+            AppTaskSafetyPolicy().validate(task, page(), state, (), action)
+
+    def test_policy_rejects_high_confidence_non_executable_ocr(self) -> None:
+        task = meituan_food_task("经典拿铁")
+        text_only = candidate(
+            "经典拿铁",
+            source="ocr",
+            confidence=0.99,
+            confirmation=True,
+            bounds=(100, 400, 300, 500),
+        )
+        state = understanding("store", candidates=(text_only,))
+        action = TaskAction(
+            kind="tap_candidate",
+            reason="test",
+            candidate_id=text_only.candidate_id,
+        )
+        with self.assertRaisesRegex(AgentError, "缺少可验证"):
+            AppTaskSafetyPolicy().validate(task, page(), state, (), action)
+
+    def test_planner_scrolls_store_when_only_ocr_evidence_is_available(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        store_name = candidate(
+            "库迪咖啡(亳州花戏楼店)",
+            source="ocr",
+            confidence=0.99,
+            confirmation=True,
+            bounds=(228, 831, 788, 891),
+        )
+        action = planner.plan(
+            meituan_food_task("库迪咖啡经典拿铁"),
+            understanding("store", candidates=(store_name,)),
+            (),
+        )
+        self.assertEqual(action.kind, "scroll_down")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_selects_confirmed_specs_button_without_model(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        select_specs = candidate(
+            "选规格",
+            source="uiautomator",
+            confirmation=True,
+            bounds=(926, 1794, 1031, 1839),
+        )
+        action = planner.plan(
+            meituan_food_task("库迪咖啡经典拿铁"),
+            understanding("product", candidates=(select_specs,)),
+            (),
+        )
+        self.assertEqual(action.kind, "tap_candidate")
+        self.assertEqual(action.candidate_id, select_specs.candidate_id)
+        self.assertEqual(model.calls, [])
+
+    def test_workflow_confirms_add_to_cart_and_stops_at_cart(self) -> None:
+        add = candidate("加入购物车", candidate_id="add", confirmation=True)
+        product = understanding("product", candidates=(add,))
+        cart = understanding("cart")
+        actions = FakeActions()
+        loop = LangGraphAppTaskLoop(
+            FakeObserver([page(frame_hash="a"), page(frame_hash="b")]),  # type: ignore[arg-type]
+            FakeUnderstandingEngine([product, cart]),  # type: ignore[arg-type]
+            actions,  # type: ignore[arg-type]
+            SequencePlanner(
+                [TaskAction(kind="tap_candidate", reason="add", candidate_id="add")]
+            ),
+            settle_seconds=0,
+            approval_handler=lambda request: True,
+        )
+        result = loop.run(meituan_food_task("经典拿铁"))
+        self.assertTrue(result.success)
+        self.assertEqual(actions.calls, [("tap", 200, 250)])
+
+    def test_task_accepts_verified_inline_cart_state_after_add(self) -> None:
+        selected = PerceivedElement(
+            text="已选规格：超大杯(570ml)、不额外加糖、标准、冰",
+            bounds=(82, 1235, 954, 1271),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(840, 1749, 982, 1805),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertTrue(
+            task.is_satisfied(
+                understanding("product", elements=(selected, checkout)),
+                ("加入购物车",),
+            )
+        )
+
+    def test_task_does_not_accept_specs_before_add_button_disappears(self) -> None:
+        selected = PerceivedElement(
+            text="已选规格：超大杯(570ml)",
+            bounds=(82, 1235, 954, 1271),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(840, 1749, 982, 1805),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        add = PerceivedElement(
+            text="加入购物车",
+            bounds=(770, 1396, 980, 1436),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertFalse(
+            task.is_satisfied(
+                understanding("product", elements=(selected, checkout, add)),
+                ("加入购物车",),
+            )
+        )
+
+    def test_modal_understanding_hides_background_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "page.png"
+            Image.new("RGB", (100, 100), "white").save(image_path)
+
+            class OCR:
+                def recognize(self, path: Path) -> tuple[OCRText, ...]:
+                    return (OCRText("美团借钱 183元", (1, 1, 90, 20), 0.99),)
+
+            raw = page(screenshot=str(image_path))
+            raw = PageState(
+                **{
+                    **raw.to_dict(),
+                    "visible_text": (),
+                    "ui_elements": (
+                        VisibleElement(
+                            "暂不升级",
+                            "",
+                            "btn_cancel",
+                            "Button",
+                            "[10,40][80,80]",
+                            True,
+                            True,
+                        ),
+                    ),
+                }
+            )
+            result = PageUnderstandingEngine(ocr_engine=OCR()).analyze(raw)
+        self.assertEqual(result.screen.kind, "modal")
+        self.assertEqual([item.text for item in result.elements], ["暂不升级"])
+
+
+if __name__ == "__main__":
+    unittest.main()

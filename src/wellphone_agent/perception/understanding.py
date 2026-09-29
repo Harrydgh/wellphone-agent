@@ -70,6 +70,14 @@ class PageUnderstandingEngine:
         fused = fuse_page_elements(page, ocr_items)
         redacted = self.redactor.redact_elements(fused)
         screen = self.classifier.classify(redacted, page.current_activity)
+        # When a native modal is present, background OCR belongs to an occluded
+        # page and must not influence planning or leak unrelated account data.
+        if screen.kind == "modal" and any(
+            item.source == "uiautomator" for item in redacted
+        ):
+            redacted = tuple(
+                item for item in redacted if item.source == "uiautomator"
+            )
         candidates = self.candidate_generator.generate(redacted)
         sources = {item.source for item in redacted}
         if sources == {"uiautomator", "ocr"}:

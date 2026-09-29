@@ -17,6 +17,19 @@ from .langgraph_workflow import (
 )
 from .openai_planner import OpenAIPlanner
 from .planner import SettingsPlanner
+from .task_planner import (
+    DeepSeekTaskDecision,
+    DeepSeekTaskPlanner,
+    TaskAction,
+    TaskTransition,
+)
+from .task_workflow import (
+    AppTaskSafetyPolicy,
+    LangGraphAppTaskLoop,
+    TaskApprovalRequired,
+    TaskRunResult,
+)
+from .tasks import AppTask, MEITUAN_PACKAGE, meituan_food_task
 
 __all__ = [
     "AgentAction",
@@ -33,5 +46,16 @@ __all__ = [
     "PhoneAgentState",
     "SAFE_SETTINGS_GOALS",
     "SettingsPlanner",
+    "AppTask",
+    "AppTaskSafetyPolicy",
+    "DeepSeekTaskDecision",
+    "DeepSeekTaskPlanner",
+    "LangGraphAppTaskLoop",
+    "MEITUAN_PACKAGE",
+    "TaskAction",
+    "TaskApprovalRequired",
+    "TaskRunResult",
+    "TaskTransition",
+    "meituan_food_task",
     "parse_safe_goal",
 ]

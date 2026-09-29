@@ -39,6 +39,18 @@ class ScrcpyControlProtocolTests(unittest.TestCase):
         with self.assertRaises(ScrcpyControlError):
             self.session._touch_message(0, 1080, 100, pressure=0xFFFF)
 
+    def test_unicode_clipboard_message_requests_immediate_paste(self) -> None:
+        messages: list[bytes] = []
+        self.session._send = messages.append  # type: ignore[method-assign]
+        self.session.paste_text("库迪咖啡")
+        payload = messages[0]
+        self.assertEqual(payload[0], 9)
+        sequence, paste, length = struct.unpack(">QBI", payload[1:14])
+        self.assertEqual(sequence, 0)
+        self.assertEqual(paste, 1)
+        self.assertEqual(payload[14:], "库迪咖啡".encode("utf-8"))
+        self.assertEqual(length, len(payload[14:]))
+
     def test_server_command_uses_matching_server_and_control_socket(self) -> None:
         command = self.session._server_command("4.1", 0x1234ABCD)
         self.assertIn("4.1", command)
