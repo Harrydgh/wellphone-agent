@@ -477,14 +477,49 @@ class AppTaskTests(unittest.TestCase):
         self.assertEqual(action.candidate_id, select_specs.candidate_id)
         self.assertEqual(model.calls, [])
 
+    def test_planner_waits_locally_while_product_page_is_loading(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        loading = PerceivedElement(
+            text="加载中",
+            bounds=(450, 850, 650, 950),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        previous = TaskTransition(
+            step=1,
+            action=TaskAction(
+                kind="tap_candidate", reason="open product", candidate_id="product"
+            ),
+            target_label="经典拿铁(超大杯)",
+            before_screen="store",
+            after_screen="unknown",
+            page_changed=True,
+        )
+        action = planner.plan(
+            meituan_food_task("库迪咖啡经典拿铁"),
+            understanding("unknown", elements=(loading,)),
+            (previous,),
+        )
+        self.assertEqual(action.kind, "wait")
+        self.assertEqual(model.calls, [])
+
     def test_workflow_confirms_add_to_cart_and_stops_at_cart(self) -> None:
         add = candidate("加入购物车", candidate_id="add", confirmation=True)
         product = understanding("product", candidates=(add,))
         cart = understanding("cart")
         actions = FakeActions()
         loop = LangGraphAppTaskLoop(
-            FakeObserver([page(frame_hash="a"), page(frame_hash="b")]),  # type: ignore[arg-type]
-            FakeUnderstandingEngine([product, cart]),  # type: ignore[arg-type]
+            FakeObserver(
+                [
+                    page(frame_hash="a"),
+                    page(frame_hash="a-confirmed"),
+                    page(frame_hash="b"),
+                ]
+            ),  # type: ignore[arg-type]
+            FakeUnderstandingEngine([product, product, cart]),  # type: ignore[arg-type]
             actions,  # type: ignore[arg-type]
             SequencePlanner(
                 [TaskAction(kind="tap_candidate", reason="add", candidate_id="add")]
@@ -495,6 +530,25 @@ class AppTaskTests(unittest.TestCase):
         result = loop.run(meituan_food_task("经典拿铁"))
         self.assertTrue(result.success)
         self.assertEqual(actions.calls, [("tap", 200, 250)])
+
+    def test_workflow_rejects_stale_candidate_after_slow_approval(self) -> None:
+        add = candidate("加入购物车", candidate_id="add", confirmation=True)
+        product = understanding("product", candidates=(add,))
+        changed_page = understanding("checkout")
+        actions = FakeActions()
+        loop = LangGraphAppTaskLoop(
+            FakeObserver([page(frame_hash="a"), page(frame_hash="changed")]),  # type: ignore[arg-type]
+            FakeUnderstandingEngine([product, changed_page]),  # type: ignore[arg-type]
+            actions,  # type: ignore[arg-type]
+            SequencePlanner(
+                [TaskAction(kind="tap_candidate", reason="add", candidate_id="add")]
+            ),
+            settle_seconds=0,
+            approval_handler=lambda request: True,
+        )
+        with self.assertRaisesRegex(AgentError, "敏感页面"):
+            loop.run(meituan_food_task("经典拿铁"))
+        self.assertEqual(actions.calls, [])
 
     def test_task_accepts_verified_inline_cart_state_after_add(self) -> None:
         selected = PerceivedElement(
@@ -553,6 +607,162 @@ class AppTaskTests(unittest.TestCase):
                 ("加入购物车",),
             )
         )
+
+    def test_task_accepts_matching_existing_cart_state_without_adding_again(self) -> None:
+        product = PerceivedElement(
+            text="经典拿铁(超大杯)",
+            bounds=(80, 900, 600, 950),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        selected = PerceivedElement(
+            text="已选规格：超大杯(570ml)",
+            bounds=(80, 1200, 900, 1250),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(840, 1749, 982, 1805),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertTrue(
+            task.is_satisfied(
+                understanding("product", elements=(product, selected, checkout)),
+                (),
+            )
+        )
+
+    def test_task_rejects_unrelated_existing_cart_state(self) -> None:
+        other = PerceivedElement(
+            text="珍珠奶茶",
+            bounds=(80, 900, 600, 950),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        selected = PerceivedElement(
+            text="已选规格：大杯",
+            bounds=(80, 1200, 900, 1250),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(840, 1749, 982, 1805),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertFalse(
+            task.is_satisfied(
+                understanding("product", elements=(other, selected, checkout)),
+                (),
+            )
+        )
+
+    def test_task_accepts_matching_item_in_cart_without_duplicate_add(self) -> None:
+        product = PerceivedElement(
+            text="经典拿铁(超大杯)",
+            bounds=(550, 1550, 980, 1620),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(780, 1720, 1040, 1840),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        task = meituan_food_task("库迪咖啡经典拿铁")
+        self.assertTrue(
+            task.is_satisfied(
+                understanding("cart", elements=(product, checkout)),
+                (),
+            )
+        )
+
+    def test_pre_action_guard_blocks_action_after_approval(self) -> None:
+        add = candidate("加入购物车", candidate_id="add", confirmation=True)
+        actions = FakeActions()
+
+        def reject_main_display_collision() -> None:
+            raise AgentError("任务 App 已出现在主屏")
+
+        loop = LangGraphAppTaskLoop(
+            FakeObserver([page(frame_hash="a")]),  # type: ignore[arg-type]
+            FakeUnderstandingEngine(
+                [understanding("product", candidates=(add,))]
+            ),  # type: ignore[arg-type]
+            actions,  # type: ignore[arg-type]
+            SequencePlanner(
+                [TaskAction(kind="tap_candidate", reason="add", candidate_id="add")]
+            ),
+            settle_seconds=0,
+            approval_handler=lambda request: True,
+            pre_action_guard=reject_main_display_collision,
+        )
+        with self.assertRaisesRegex(AgentError, "主屏"):
+            loop.run(meituan_food_task("经典拿铁"))
+        self.assertEqual(actions.calls, [])
+
+    def test_workflow_stops_without_action_for_matching_existing_cart_item(self) -> None:
+        product = PerceivedElement(
+            text="经典拿铁(超大杯)",
+            bounds=(80, 900, 600, 950),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        selected = PerceivedElement(
+            text="已选规格：超大杯(570ml)",
+            bounds=(80, 1200, 900, 1250),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        checkout = PerceivedElement(
+            text="去结算",
+            bounds=(840, 1749, 982, 1805),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        actions = FakeActions()
+        loop = LangGraphAppTaskLoop(
+            FakeObserver([page(frame_hash="a")]),  # type: ignore[arg-type]
+            FakeUnderstandingEngine(
+                [understanding("product", elements=(product, selected, checkout))]
+            ),  # type: ignore[arg-type]
+            actions,  # type: ignore[arg-type]
+            SequencePlanner([]),
+            settle_seconds=0,
+        )
+        result = loop.run(meituan_food_task("库迪咖啡经典拿铁"))
+        self.assertTrue(result.success)
+        self.assertEqual(result.steps, 0)
+        self.assertIn("未重复添加", result.reason)
+        self.assertEqual(actions.calls, [])
 
     def test_modal_understanding_hides_background_ocr(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

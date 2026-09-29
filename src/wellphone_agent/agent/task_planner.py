@@ -15,6 +15,7 @@ TaskActionKind = Literal[
     "tap_candidate",
     "input_query",
     "scroll_down",
+    "wait",
     "back",
     "finish",
     "abort",
@@ -150,8 +151,19 @@ class DeepSeekTaskPlanner:
     ) -> TaskAction:
         if understanding.current_app != task.allowed_package:
             return TaskAction(kind="abort", reason="页面已离开美团安全范围。")
-        if understanding.screen.kind in {"checkout", "payment", "login", "permission"}:
-            return TaskAction(kind="abort", reason="到达禁止自动操作的敏感页面。")
+        if understanding.screen.kind in {
+            "checkout",
+            "payment",
+            "verification",
+            "login",
+            "permission",
+        }:
+            reason = (
+                "遇到人机滑块验证，必须由用户手动完成。"
+                if understanding.screen.kind == "verification"
+                else "到达禁止自动操作的敏感页面。"
+            )
+            return TaskAction(kind="abort", reason=reason)
 
         candidates = task.candidates(understanding)
         added_to_cart = any(
@@ -194,6 +206,27 @@ class DeepSeekTaskPlanner:
                     candidate_id=dismiss.candidate_id,
                     reason="关闭不属于外卖任务的升级弹窗。",
                 )
+
+        visible_text = tuple(element.text for element in understanding.elements)
+        is_loading = any("加载中" in text for text in visible_text)
+        consecutive_waits = 0
+        for transition in reversed(history):
+            if transition.action.kind != "wait":
+                break
+            consecutive_waits += 1
+        if understanding.screen.kind == "unknown" and (
+            is_loading
+            or (history and history[-1].action.kind == "tap_candidate")
+        ):
+            if consecutive_waits >= 3:
+                return TaskAction(
+                    kind="abort",
+                    reason="页面长时间停留在加载状态，任务已安全停止。",
+                )
+            return TaskAction(
+                kind="wait",
+                reason="商品页仍在加载，等待后重新观察，不发送手机动作。",
+            )
 
         last_target = history[-1].target_label if history else None
         if last_target == "搜索框":

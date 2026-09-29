@@ -43,6 +43,7 @@ class AppTaskState(TypedDict):
 
 
 ApprovalHandler = Callable[[dict[str, object]], bool]
+PreActionGuard = Callable[[], None]
 
 
 class TaskApprovalRequired(AgentError):
@@ -82,7 +83,13 @@ class AppTaskSafetyPolicy:
             raise AgentError("任务拒绝控制手机主显示。")
         if understanding.current_app != task.allowed_package:
             raise AgentError("任务已离开允许的美团 App。")
-        if understanding.screen.kind in {"checkout", "payment", "login", "permission"}:
+        if understanding.screen.kind in {
+            "checkout",
+            "payment",
+            "verification",
+            "login",
+            "permission",
+        }:
             if action.kind not in {"abort", "back"}:
                 raise AgentError("敏感页面只允许停止或返回。")
 
@@ -111,7 +118,7 @@ class AppTaskSafetyPolicy:
             completed = tuple(item.target_label or "" for item in history)
             if not task.is_satisfied(understanding, completed):
                 raise AgentError("任务尚未到达购物车停止条件。")
-        elif action.kind not in {"scroll_down", "back", "abort"}:
+        elif action.kind not in {"scroll_down", "wait", "back", "abort"}:
             raise AgentError(f"不支持的任务动作：{action.kind}")
         return candidate
 
@@ -131,6 +138,7 @@ class LangGraphAppTaskLoop:
         settle_seconds: float = 1.5,
         max_unchanged_actions: int = 2,
         approval_handler: ApprovalHandler | None = None,
+        pre_action_guard: PreActionGuard | None = None,
         checkpointer: InMemorySaver | None = None,
     ) -> None:
         if max_unchanged_actions <= 0 or settle_seconds < 0:
@@ -144,6 +152,7 @@ class LangGraphAppTaskLoop:
         self.settle_seconds = settle_seconds
         self.max_unchanged_actions = max_unchanged_actions
         self.approval_handler = approval_handler
+        self.pre_action_guard = pre_action_guard
         self.checkpointer = checkpointer or InMemorySaver(
             serde=JsonPlusSerializer(
                 allowed_msgpack_modules=[
@@ -190,7 +199,12 @@ class LangGraphAppTaskLoop:
         task = state["task"]
         completed = tuple(item.target_label or "" for item in state["history"])
         if task.is_satisfied(understanding, completed):
-            action = TaskAction(kind="finish", reason="商品已加入购物车并验证到购物车状态。")
+            reason = (
+                "检测到该商品已在购物车，未重复添加。"
+                if not any("加入购物车" in label for label in completed)
+                else "商品已加入购物车并验证到购物车状态。"
+            )
+            action = TaskAction(kind="finish", reason=reason)
         elif state["step"] >= task.max_steps:
             reason = f"任务达到 {task.max_steps} 步安全上限。"
             result = TaskRunResult(
@@ -266,7 +280,31 @@ class LangGraphAppTaskLoop:
         understanding = state["understanding"]
         page = state["page"]
         assert action is not None and understanding is not None and page is not None
+        if self.pre_action_guard is not None:
+            # Approval may take time. Recheck display isolation at the last possible
+            # moment so no action is sent after the protected App reaches display 0.
+            self.pre_action_guard()
         candidate = self.policy.candidate_for(state["task"], understanding, action)
+        if candidate is not None and candidate.requires_confirmation:
+            # A user may take minutes to approve. Never execute coordinates from
+            # the pre-approval frame: re-observe and require the exact grounded
+            # candidate to still exist on the same safe page.
+            page, understanding = self._observe_page(
+                state["task"], f"task-pre-action-{state['step'] + 1}"
+            )
+            candidate = self.policy.validate(
+                state["task"],
+                page,
+                understanding,
+                state["history"],
+                action,
+            )
+            self._log(
+                "task_pre_action_revalidated",
+                step=state["step"] + 1,
+                candidate_id=action.candidate_id,
+                screen=understanding.screen.kind,
+            )
         if action.kind == "tap_candidate":
             assert candidate is not None
             left, top, right, bottom = candidate.bounds
@@ -284,6 +322,8 @@ class LangGraphAppTaskLoop:
             )
         elif action.kind == "back":
             self.actions.keyevent("KEYCODE_BACK")
+        # "wait" intentionally sends no control message; the normal settle and
+        # verify steps below only re-observe the virtual display.
         if self.settle_seconds:
             time.sleep(self.settle_seconds)
         return {}

@@ -5,6 +5,7 @@ __pycache__/
 *.egg-info/
 logs/*.jsonl
 screenshots/*
+reports/*.json
 !logs/.gitkeep
 !screenshots/.gitkeep
 Wellphone _ Notion.html

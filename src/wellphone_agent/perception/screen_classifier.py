@@ -14,6 +14,7 @@ ScreenKind = Literal[
     "cart",
     "checkout",
     "payment",
+    "verification",
     "login",
     "permission",
     "modal",
@@ -36,6 +37,7 @@ class ScreenClassifier:
         ("modal", ("暂不升级", "新版本抢先体验", "以后再说")),
         ("payment", ("支付密码", "确认支付", "立即支付", "付款")),
         ("checkout", ("提交订单", "确认订单", "配送地址", "应付")),
+        ("verification", ("拖动滑块", "请按照说明拖动", "人机验证")),
         ("permission", ("允许", "仅在使用中", "权限")),
         ("login", ("登录", "验证码", "手机号登录")),
         ("product", ("选规格", "加入购物车", "商品详情")),
@@ -54,7 +56,14 @@ class ScreenClassifier:
         texts = tuple(item.text for item in elements)
         page_bottom = max((item.bounds[3] for item in elements), default=1)
         activity = current_activity or ""
-        sensitive_kinds = {"modal", "payment", "checkout", "permission", "login"}
+        sensitive_kinds = {
+            "modal",
+            "payment",
+            "checkout",
+            "verification",
+            "permission",
+            "login",
+        }
         for kind, keywords in self.KEYWORDS:
             if kind not in sensitive_kinds:
                 continue

@@ -227,16 +227,40 @@ class AppTask:
         completed_targets: tuple[str, ...],
     ) -> bool:
         added = any("加入购物车" in label for label in completed_targets)
-        if not added:
-            return False
-        if understanding.screen.kind == "cart":
+        if added and understanding.screen.kind == "cart":
             return True
+        if added and self._has_inline_cart_state(understanding, require_query=False):
+            return True
+        return self.has_verified_existing_cart_item(understanding)
+
+    def has_verified_existing_cart_item(
+        self, understanding: PageUnderstanding
+    ) -> bool:
+        """Recognize this exact product's post-add state without adding it again."""
+
+        return self._has_inline_cart_state(understanding, require_query=True)
+
+    def _has_inline_cart_state(
+        self,
+        understanding: PageUnderstanding,
+        *,
+        require_query: bool,
+    ) -> bool:
+
         texts = tuple(element.text.strip() for element in understanding.elements)
+        has_query_match = any(
+            term.casefold() in text.casefold()
+            for term in self.query_terms
+            for text in texts
+        )
         has_selected_specs = any("已选规格" in text for text in texts)
         has_cart_total = any("去结算" in text for text in texts)
         add_button_gone = not any("加入购物车" in text for text in texts)
+        if understanding.screen.kind == "cart":
+            return has_query_match and has_cart_total and add_button_gone
         return (
             understanding.screen.kind in {"product", "store"}
+            and (has_query_match or not require_query)
             and has_selected_specs
             and has_cart_total
             and add_button_gone

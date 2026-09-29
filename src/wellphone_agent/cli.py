@@ -183,14 +183,15 @@ def command_langgraph_agent(task: str, model: str) -> int:
     return 0
 
 
-def command_meituan_agent(query: str, model: str) -> int:
+def command_meituan_agent(query: str, model: str, concurrent: bool) -> int:
     preferred = os.environ.get("WELLPHONE_SERIAL") or None
     project_root = Path(__file__).resolve().parents[2]
-    result, log_path = run_meituan_agent(
+    result, log_path, report_path = run_meituan_agent(
         project_root=project_root,
         preferred_serial=preferred,
         query=query,
         model=model,
+        monitor_main_display=concurrent,
     )
     print("美团外卖任务已到达购物车并安全停止。")
     print(f"搜索词: {query}")
@@ -198,6 +199,8 @@ def command_meituan_agent(query: str, model: str) -> int:
     print(f"最终页面: {result.final_understanding.screen.kind}")
     print(f"截图: {result.final_understanding.screenshot}")
     print(f"日志: {log_path}")
+    if report_path is not None:
+        print(f"并发验收报告: {report_path}")
     return 0
 
 
@@ -273,6 +276,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         default=os.environ.get("WELLPHONE_DEEPSEEK_MODEL", "deepseek-flash"),
     )
+    meituan_agent.add_argument(
+        "--concurrent",
+        action="store_true",
+        help="monitor display 0 and write a concurrency acceptance report",
+    )
     return parser
 
 
@@ -299,7 +307,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "langgraph-agent":
             return command_langgraph_agent(args.task, args.model)
         if args.command == "meituan-agent":
-            return command_meituan_agent(args.query, args.model)
+            return command_meituan_agent(args.query, args.model, args.concurrent)
     except (
         AdbError,
         AgentError,

@@ -121,6 +121,10 @@ class UnderstandingTests(unittest.TestCase):
         self.assertEqual(classifier.classify((element("加入购物车"),)).kind, "product")
         self.assertEqual(classifier.classify((element("购物车"),)).kind, "cart")
         self.assertEqual(classifier.classify((element("提交订单"),)).kind, "checkout")
+        self.assertEqual(
+            classifier.classify((element("拖动滑块刚露出完整的1个喜条就松开"),)).kind,
+            "verification",
+        )
         mixed = (element("提交订单"), element("立即支付"))
         self.assertEqual(classifier.classify(mixed).kind, "payment")
         self.assertEqual(classifier.classify((element("搜索系统设置项"),)).kind, "unknown")
