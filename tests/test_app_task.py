@@ -178,6 +178,50 @@ class AppTaskTests(unittest.TestCase):
         self.assertTrue(item.requires_confirmation)
         self.assertFalse(item.executable)
 
+    def test_exact_high_confidence_ocr_merchant_is_confirmed_and_executable(
+        self,
+    ) -> None:
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸")
+        merchant = PerceivedElement(
+            text="瑞幸咖啡(亳州一中大师店)",
+            bounds=(200, 432, 659, 478),
+            source="ocr",
+            confidence=0.98783,
+            clickable=False,
+            enabled=True,
+        )
+        item = task.candidates(
+            understanding("store", elements=(merchant,))
+        )[0]
+        self.assertEqual(item.source, "ocr")
+        self.assertTrue(item.executable)
+        self.assertTrue(item.requires_confirmation)
+        self.assertEqual(item.risk_level, "medium")
+
+    def test_low_confidence_or_product_ocr_stays_non_executable(self) -> None:
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸")
+        merchant = PerceivedElement(
+            text="瑞幸咖啡(亳州一中大师店)",
+            bounds=(200, 432, 659, 478),
+            source="ocr",
+            confidence=0.85,
+            clickable=False,
+            enabled=True,
+        )
+        product = PerceivedElement(
+            text="生椰拿铁（首...小黄油拿铁",
+            bounds=(659, 905, 1055, 944),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        items = task.candidates(
+            understanding("store", elements=(merchant, product))
+        )
+        self.assertEqual(len(items), 2)
+        self.assertTrue(all(not item.executable for item in items))
+
     def test_high_confidence_whitelisted_ocr_button_is_confirmed_and_executable(
         self,
     ) -> None:
@@ -358,6 +402,191 @@ class AppTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError, "只支持.*1 份"):
             meituan_food_task("鲜肉包子", quantity=2)
 
+    def test_store_and_product_are_separate_task_targets(self) -> None:
+        task = meituan_food_task(
+            "生椰拿铁",
+            merchant_query="瑞幸咖啡",
+            specification_policy="default",
+        )
+        store = candidate(
+            "瑞幸咖啡（河北店）",
+            candidate_id="store",
+            confirmation=True,
+            bounds=(20, 500, 1000, 700),
+        )
+        product = candidate(
+            "生椰拿铁",
+            candidate_id="product",
+            confirmation=True,
+            bounds=(200, 800, 900, 1000),
+        )
+        scoped = task.candidates(
+            understanding("results", candidates=(store, product))
+        )
+        self.assertEqual(
+            [item.candidate_id for item in scoped], ["store", "product"]
+        )
+        self.assertEqual(task.input_query(()), "瑞幸咖啡")
+        self.assertEqual(
+            task.input_query(("瑞幸咖啡（河北店）",)), "生椰拿铁"
+        )
+        self.assertFalse(task.label_matches_quantity("双杯生椰拿铁"))
+        self.assertFalse(task.label_matches_quantity("生椰拿铁×2"))
+        self.assertTrue(task.label_matches_quantity("生椰拿铁"))
+
+    def test_kfc_embedded_store_exposes_only_top_search_hotword(self) -> None:
+        task = meituan_food_task("薯条", merchant_query="肯德基")
+        brand = PerceivedElement(
+            text="神抢手",
+            bounds=(80, 125, 276, 199),
+            source="ocr",
+            confidence=0.999,
+            clickable=False,
+            enabled=True,
+        )
+        hotword = PerceivedElement(
+            text="Q烤肉拌饭",
+            bounds=(603, 143, 778, 183),
+            source="ocr",
+            confidence=0.99966,
+            clickable=False,
+            enabled=True,
+        )
+        unrelated = PerceivedElement(
+            text="每日秒杀",
+            bounds=(691, 1337, 957, 1416),
+            source="ocr",
+            confidence=0.999,
+            clickable=False,
+            enabled=True,
+        )
+        items = task.candidates(
+            understanding("store", elements=(brand, hotword, unrelated))
+        )
+        self.assertEqual([item.label for item in items], ["搜索框"])
+        self.assertTrue(items[0].executable)
+        self.assertEqual(items[0].source, "ocr")
+
+    def test_embedded_marketplace_exposes_top_search_button_for_any_merchant(
+        self,
+    ) -> None:
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸")
+        marketplace = PerceivedElement(
+            text="我的券",
+            bounds=(856, 1809, 943, 1845),
+            source="ocr",
+            confidence=0.999,
+            clickable=False,
+            enabled=True,
+        )
+        search = PerceivedElement(
+            text="搜索",
+            bounds=(908, 138, 1021, 188),
+            source="ocr",
+            confidence=0.997,
+            clickable=False,
+            enabled=True,
+        )
+        items = task.candidates(
+            understanding("store", elements=(marketplace, search))
+        )
+        self.assertEqual([item.label for item in items], ["搜索框"])
+        self.assertTrue(items[0].executable)
+
+    def test_planner_enters_requested_store_before_selecting_product(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸咖啡")
+        store = candidate(
+            "瑞幸咖啡（河北店）",
+            candidate_id="store",
+            confirmation=True,
+            bounds=(20, 500, 1000, 700),
+        )
+        product = candidate(
+            "生椰拿铁",
+            candidate_id="product",
+            confirmation=True,
+            bounds=(200, 800, 900, 1000),
+        )
+        after_food_tab = TaskTransition(
+            step=3,
+            action=TaskAction(
+                kind="tap_candidate",
+                candidate_id="food",
+                reason="进入外卖",
+            ),
+            target_label="外卖",
+            before_screen="results",
+            after_screen="results",
+            page_changed=True,
+        )
+        action = planner.plan(
+            task,
+            understanding("results", candidates=(product, store)),
+            (after_food_tab,),
+        )
+        self.assertEqual(action.candidate_id, "store")
+        self.assertIn("指定的店铺", action.reason)
+
+        after_store = TaskTransition(
+            step=4,
+            action=action,
+            target_label="瑞幸咖啡（河北店）",
+            before_screen="results",
+            after_screen="store",
+            page_changed=True,
+        )
+        action = planner.plan(
+            task,
+            understanding("store", candidates=(store, product)),
+            (after_food_tab, after_store),
+        )
+        self.assertEqual(action.candidate_id, "product")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_selects_product_nested_in_requested_store_card(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸")
+        store = candidate(
+            "瑞幸咖啡(亳州杉杉国际城店)",
+            candidate_id="store",
+            confirmation=True,
+            bounds=(21, 408, 1059, 1011),
+        )
+        product = candidate(
+            "生椰拿铁（首创）",
+            candidate_id="product",
+            confirmation=True,
+            bounds=(665, 674, 896, 990),
+        )
+        state = understanding("results", candidates=(store, product))
+
+        scoped = task.candidates(state)
+        nested_product = next(
+            item for item in scoped if item.candidate_id == "product"
+        )
+        self.assertIn("瑞幸咖啡", nested_product.label)
+        self.assertIn("生椰拿铁", nested_product.label)
+
+        after_food_tab = TaskTransition(
+            step=3,
+            action=TaskAction(
+                kind="tap_candidate",
+                candidate_id="food",
+                reason="进入外卖",
+            ),
+            target_label="外卖",
+            before_screen="results",
+            after_screen="results",
+            page_changed=True,
+        )
+        action = planner.plan(task, state, (after_food_tab,))
+        self.assertEqual(action.candidate_id, "product")
+        self.assertIn("直接选择该商品", action.reason)
+        self.assertEqual(model.calls, [])
+
     def test_search_layout_is_exposed_as_search_box_without_old_query(self) -> None:
         task = meituan_food_task("库迪咖啡经典拿铁")
         old_query = PerceivedElement(
@@ -396,6 +625,20 @@ class AppTaskTests(unittest.TestCase):
             (),
         )
         self.assertEqual(action.candidate_id, "search-box")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_waits_for_search_box_on_partially_loaded_home(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        action = planner.plan(
+            meituan_food_task("薯条", merchant_query="肯德基"),
+            understanding(
+                "home", candidates=(candidate("搜索", source="ocr"),)
+            ),
+            (),
+        )
+        self.assertEqual(action.kind, "wait")
+        self.assertIn("搜索框", action.reason)
         self.assertEqual(model.calls, [])
 
     def test_planner_leaves_existing_cart_before_starting_search(self) -> None:
@@ -525,6 +768,20 @@ class AppTaskTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError, "缺少可验证"):
             AppTaskSafetyPolicy().validate(task, page(), state, (), action)
 
+    def test_policy_rejects_double_cup_for_single_item_task(self) -> None:
+        task = meituan_food_task("生椰拿铁", merchant_query="瑞幸")
+        double = candidate(
+            "瑞幸咖啡【双杯】人气拿铁（含生椰拿铁）",
+            candidate_id="double",
+            confirmation=True,
+        )
+        state = understanding("results", candidates=(double,))
+        action = TaskAction(
+            kind="tap_candidate", reason="test", candidate_id="double"
+        )
+        with self.assertRaisesRegex(AgentError, "单份任务"):
+            AppTaskSafetyPolicy().validate(task, page(), state, (), action)
+
     def test_planner_scrolls_store_when_only_ocr_evidence_is_available(self) -> None:
         model = FakeModel(AssertionError("must not be used"))
         planner = DeepSeekTaskPlanner(model="test", structured_model=model)
@@ -541,6 +798,62 @@ class AppTaskTests(unittest.TestCase):
             (),
         )
         self.assertEqual(action.kind, "scroll_down")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_scrolls_past_store_promotions_after_merchant_selected(
+        self,
+    ) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        selected_store = TaskTransition(
+            step=4,
+            action=TaskAction(
+                kind="tap_candidate", candidate_id="store", reason="进入肯德基"
+            ),
+            target_label="肯德基（亳州和平店）",
+            before_screen="store",
+            after_screen="store",
+            page_changed=True,
+        )
+        promotion = candidate(
+            "肯德基 | 【国庆节】经典汉堡 9 件套随心选",
+            candidate_id="promotion",
+        )
+        action = planner.plan(
+            meituan_food_task("薯条", merchant_query="肯德基"),
+            understanding("store", candidates=(promotion,)),
+            (selected_store,),
+        )
+        self.assertEqual(action.kind, "scroll_down")
+        self.assertIn("薯条", action.reason)
+        self.assertEqual(model.calls, [])
+
+    def test_planner_skips_double_cup_results_for_single_item_task(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        selected_store = TaskTransition(
+            step=4,
+            action=TaskAction(
+                kind="tap_candidate", candidate_id="store", reason="进入瑞幸"
+            ),
+            target_label="瑞幸咖啡(杉杉国际城店)",
+            before_screen="store",
+            after_screen="store",
+            page_changed=True,
+        )
+        double = candidate(
+            "瑞幸咖啡【双杯】人气拿铁（含生椰拿铁）",
+            candidate_id="double",
+            confirmation=True,
+            bounds=(386, 746, 1012, 795),
+        )
+        action = planner.plan(
+            meituan_food_task("生椰拿铁", merchant_query="瑞幸"),
+            understanding("results", candidates=(double,)),
+            (selected_store,),
+        )
+        self.assertEqual(action.kind, "scroll_down")
+        self.assertIn("单份", action.reason)
         self.assertEqual(model.calls, [])
 
     def test_planner_selects_confirmed_specs_button_without_model(self) -> None:
@@ -588,6 +901,26 @@ class AppTaskTests(unittest.TestCase):
             (previous,),
         )
         self.assertEqual(action.kind, "wait")
+        self.assertEqual(model.calls, [])
+
+    def test_planner_stops_when_requested_store_is_closed(self) -> None:
+        model = FakeModel(AssertionError("must not be used"))
+        planner = DeepSeekTaskPlanner(model="test", structured_model=model)
+        closed = PerceivedElement(
+            text="门店已打烊",
+            bounds=(430, 360, 670, 420),
+            source="ocr",
+            confidence=0.99,
+            clickable=False,
+            enabled=True,
+        )
+        action = planner.plan(
+            meituan_food_task("生椰拿铁", merchant_query="瑞幸"),
+            understanding("store", elements=(closed,)),
+            (),
+        )
+        self.assertEqual(action.kind, "abort")
+        self.assertIn("打烊", action.reason)
         self.assertEqual(model.calls, [])
 
     def test_workflow_confirms_add_to_cart_and_stops_at_cart(self) -> None:

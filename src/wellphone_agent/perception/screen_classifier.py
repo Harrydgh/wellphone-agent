@@ -37,14 +37,26 @@ class ScreenClassifier:
         ("modal", ("暂不升级", "新版本抢先体验", "以后再说")),
         ("payment", ("支付密码", "确认支付", "立即支付", "付款")),
         ("checkout", ("提交订单", "确认订单", "配送地址", "应付")),
-        ("verification", ("拖动滑块", "请按照说明拖动", "人机验证")),
+        (
+            "verification",
+            (
+                "拖动滑块",
+                "滑动滑块",
+                "滑块验证",
+                "请按照说明拖动",
+                "人机验证",
+            ),
+        ),
         ("permission", ("允许", "仅在使用中", "权限")),
         ("login", ("登录", "验证码", "手机号登录")),
         ("product", ("选规格", "加入购物车", "商品详情")),
         ("cart", ("购物车", "去结算", "清空购物车", "结算", "全选")),
-        ("store", ("配送费", "起送", "店铺", "商家")),
+        ("store", ("配送费", "起送", "店铺", "商家", "神抢手", "神枪手", "我的券")),
         ("results", ("综合排序", "筛选", "搜索结果")),
-        ("search", ("搜索历史", "大家都在搜", "热门搜索")),
+        (
+            "search",
+            ("搜索历史", "历史搜索", "搜索发现", "大家都在搜", "热门搜索"),
+        ),
         ("home", ("首页", "推荐", "附近")),
     )
 
@@ -89,6 +101,12 @@ class ScreenClassifier:
             return ScreenClassification(
                 "home", 0.9, ("activity:homepage.MainActivity",)
             )
+        compact_top_search = any(
+            item.text.strip() == "搜索" and item.bounds[1] < 350
+            for item in elements
+        ) and len(elements) <= 8
+        if compact_top_search:
+            return ScreenClassification("search", 0.86, ("顶部搜索按钮",))
         for kind, keywords in self.KEYWORDS:
             if kind in sensitive_kinds:
                 continue

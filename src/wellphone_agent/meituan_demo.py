@@ -29,6 +29,7 @@ def run_meituan_agent(
     project_root: Path,
     preferred_serial: str | None,
     query: str,
+    merchant_query: str | None = None,
     model: str,
     monitor_main_display: bool = False,
     selection_strategy: Literal["exact_match", "first_match"] = "exact_match",
@@ -38,6 +39,7 @@ def run_meituan_agent(
 ) -> tuple[TaskRunResult, Path, Path | None]:
     task = meituan_food_task(
         query,
+        merchant_query=merchant_query,
         selection_strategy=selection_strategy,
         quantity=quantity,
         specification_policy=specification_policy,
@@ -183,6 +185,8 @@ def run_meituan_agent(
                     else result.reason if result is not None else "任务未启动。"
                 ),
                 "query": task.query,
+                "merchant_query": task.merchant_query,
+                "product_query": task.query,
                 "selection_strategy": task.selection_strategy,
                 "quantity": task.quantity,
                 "specification_policy": task.specification_policy,

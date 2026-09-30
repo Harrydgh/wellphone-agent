@@ -125,6 +125,10 @@ class UnderstandingTests(unittest.TestCase):
             classifier.classify((element("拖动滑块刚露出完整的1个喜条就松开"),)).kind,
             "verification",
         )
+        self.assertEqual(
+            classifier.classify((element("请向右滑动滑块验证"),)).kind,
+            "verification",
+        )
         mixed = (element("提交订单"), element("立即支付"))
         self.assertEqual(classifier.classify(mixed).kind, "payment")
         self.assertEqual(classifier.classify((element("搜索系统设置项"),)).kind, "unknown")
@@ -146,6 +150,40 @@ class UnderstandingTests(unittest.TestCase):
             items, "com.meituan.android.pt.homepage.activity.MainActivity"
         )
         self.assertEqual(result.kind, "home")
+
+    def test_kfc_embedded_page_is_classified_as_store(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element("神抢手", source="ocr", clickable=False),
+            element("我的券", source="ocr", clickable=False),
+        )
+        self.assertEqual(classifier.classify(items).kind, "store")
+
+    def test_compact_embedded_search_page_is_classified_as_search(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element(
+                "米线",
+                source="ocr",
+                clickable=False,
+                bounds=(140, 170, 300, 230),
+            ),
+            element(
+                "搜索",
+                source="uiautomator",
+                clickable=False,
+                bounds=(892, 165, 1044, 249),
+            ),
+        )
+        self.assertEqual(classifier.classify(items).kind, "search")
+
+    def test_embedded_search_history_labels_are_classified_as_search(self) -> None:
+        classifier = ScreenClassifier()
+        items = (
+            element("历史搜索", clickable=False, bounds=(31, 288, 196, 346)),
+            element("搜索发现", clickable=False, bounds=(31, 498, 196, 556)),
+        )
+        self.assertEqual(classifier.classify(items).kind, "search")
 
     def test_sensitive_signal_outweighs_meituan_home_activity(self) -> None:
         classifier = ScreenClassifier()

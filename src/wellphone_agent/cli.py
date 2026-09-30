@@ -217,7 +217,9 @@ def command_shopping_agent(
 ) -> int:
     intent = DeepSeekShoppingIntentParser(model=model).parse(instruction)
     print("已将自然语言任务解析为受控购物目标：")
-    print(f"搜索词: {intent.query}")
+    print(f"应用: 美团")
+    print(f"指定店铺: {intent.merchant_query or '未指定'}")
+    print(f"目标商品: {intent.product_query}")
     print(f"选择策略: {intent.selection_strategy}")
     print(f"数量: {intent.quantity}")
     print(f"规格策略: {intent.specification_policy}")
@@ -231,6 +233,7 @@ def command_shopping_agent(
         project_root=project_root,
         preferred_serial=preferred,
         query=intent.query,
+        merchant_query=intent.merchant_query,
         model=model,
         monitor_main_display=concurrent,
         selection_strategy=intent.selection_strategy,

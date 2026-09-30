@@ -166,6 +166,8 @@ class DeepSeekTaskPlanner:
             return TaskAction(kind="abort", reason=reason)
 
         candidates = task.candidates(understanding)
+        completed_targets = tuple(item.target_label or "" for item in history)
+        merchant_selected = task.merchant_was_selected(completed_targets)
         added_to_cart = any(
             item.target_label and "加入购物车" in item.target_label
             for item in history
@@ -195,6 +197,21 @@ class DeepSeekTaskPlanner:
                     candidate_id=search_box.candidate_id,
                     reason="先聚焦搜索框，避免提交其中残留的旧搜索词。",
                 )
+            if not action_candidates:
+                recent_waits = 0
+                for transition in reversed(history):
+                    if transition.action.kind != "wait":
+                        break
+                    recent_waits += 1
+                if recent_waits >= 3:
+                    return TaskAction(
+                        kind="abort",
+                        reason="美团首页搜索框长时间未加载，任务已安全停止。",
+                    )
+                return TaskAction(
+                    kind="wait",
+                    reason="美团首页仍在加载搜索框，等待后重新观察。",
+                )
         if understanding.screen.kind == "modal":
             dismiss = next(
                 (item for item in action_candidates if item.label == "暂不升级"),
@@ -208,6 +225,11 @@ class DeepSeekTaskPlanner:
                 )
 
         visible_text = tuple(element.text for element in understanding.elements)
+        if any("门店已打烊" in text for text in visible_text):
+            return TaskAction(
+                kind="abort",
+                reason="指定门店当前已打烊，不能继续选择商品。",
+            )
         is_loading = any("加载中" in text for text in visible_text)
         consecutive_waits = 0
         for transition in reversed(history):
@@ -216,6 +238,7 @@ class DeepSeekTaskPlanner:
             consecutive_waits += 1
         if understanding.screen.kind == "unknown" and (
             is_loading
+            or not action_candidates
             or (history and history[-1].action.kind == "tap_candidate")
         ):
             if consecutive_waits >= 3:
@@ -229,13 +252,20 @@ class DeepSeekTaskPlanner:
             )
 
         last_target = history[-1].target_label if history else None
-        if last_target == "搜索框":
-            return TaskAction(kind="input_query", reason="输入用户提供的商品搜索词。")
+        if last_target == "搜索框" or (
+            merchant_selected and last_target == "搜索"
+        ):
+            reason = (
+                "在店铺内输入用户要求的商品名称。"
+                if merchant_selected and task.merchant_query
+                else "输入用户提供的搜索词。"
+            )
+            return TaskAction(kind="input_query", reason=reason)
         if history and history[-1].action.kind == "input_query":
             food_tab = next(
                 (item for item in action_candidates if item.label == "外卖"), None
             )
-            if food_tab is not None:
+            if food_tab is not None and not merchant_selected:
                 return TaskAction(
                     kind="tap_candidate",
                     candidate_id=food_tab.candidate_id,
@@ -245,13 +275,70 @@ class DeepSeekTaskPlanner:
         matched = tuple(
             item
             for item in action_candidates
-            if task.label_matches_query(item.label)
+            if (
+                task.label_matches_query(item.label)
+                if merchant_selected
+                else task.label_matches_merchant(item.label)
+            )
         )
+        if not merchant_selected:
+            direct_merchant_products = tuple(
+                item
+                for item in matched
+                if task.label_matches_merchant(item.label)
+                and task.label_matches_query(item.label)
+                and task.label_matches_quantity(item.label)
+                and item.bounds[1] >= 300
+                and "广告" not in item.label
+                and "推广" not in item.label
+            )
+            if direct_merchant_products:
+                product = min(
+                    direct_merchant_products,
+                    key=lambda item: (item.bounds[1], item.bounds[0]),
+                )
+                return TaskAction(
+                    kind="tap_candidate",
+                    candidate_id=product.candidate_id,
+                    reason=(
+                        f"在“{task.merchant_query}”门店卡片中已找到"
+                        f"“{task.query}”，直接选择该商品。"
+                    ),
+                )
+            real_merchants = tuple(
+                item
+                for item in matched
+                if item.bounds[1] >= 300
+                and "广告" not in item.label
+                and "推广" not in item.label
+                and "点击 发起搜索" not in item.label
+            )
+            if real_merchants:
+                merchant = min(
+                    real_merchants,
+                    key=lambda item: (
+                        0 if "店" in item.label else 1,
+                        item.bounds[1],
+                        item.bounds[0],
+                    ),
+                )
+                return TaskAction(
+                    kind="tap_candidate",
+                    candidate_id=merchant.candidate_id,
+                    reason=f"先进入用户指定的店铺“{task.merchant_query}”。",
+                )
+            if last_target == "外卖":
+                return TaskAction(
+                    kind="abort",
+                    reason=f"外卖结果中没有找到指定店铺“{task.merchant_query}”。",
+                )
+
         product_term = task.query_terms[-1].casefold()
         executable_product_matches = tuple(
             item
             for item in matched
             if item.executable
+            and task.label_matches_quantity(item.label)
             and (
                 task.selection_strategy == "first_match"
                 or product_term in item.label.casefold()
@@ -277,6 +364,25 @@ class DeepSeekTaskPlanner:
                     candidate_id=first.candidate_id,
                     reason="按页面从上到下选择第一个非广告的真实匹配商品。",
                 )
+        if task.selection_strategy == "exact_match" and executable_product_matches:
+            exact = min(
+                executable_product_matches,
+                key=lambda item: (
+                    0 if task.label_matches_merchant(item.label) else 1,
+                    item.bounds[1],
+                    item.bounds[0],
+                ),
+            )
+            return TaskAction(
+                kind="tap_candidate",
+                candidate_id=exact.candidate_id,
+                reason="选择页面中第一个符合店铺、商品名称和单份数量要求的候选。",
+            )
+        if matched and not any(task.label_matches_quantity(item.label) for item in matched):
+            return TaskAction(
+                kind="scroll_down",
+                reason="当前匹配结果都是双杯或多份套餐，继续查找单份商品。",
+            )
         if len(executable_product_matches) == 1:
             return TaskAction(
                 kind="tap_candidate",
@@ -303,6 +409,31 @@ class DeepSeekTaskPlanner:
                 candidate_id=next_button.candidate_id,
                 reason=f"在目标商品页面定位到“{next_button.label}”按钮。",
             )
+        if (
+            merchant_selected
+            and task.merchant_query
+            and understanding.screen.kind == "store"
+            and not matched
+            and last_target != "搜索"
+        ):
+            store_search = next(
+                (
+                    item
+                    for item in action_candidates
+                    if item.label in {"搜索", "搜索框"}
+                ),
+                None,
+            )
+            if store_search is not None:
+                return TaskAction(
+                    kind="tap_candidate",
+                    candidate_id=store_search.candidate_id,
+                    reason=f"已进入指定店铺，打开店内搜索查找“{task.query}”。",
+                )
+            return TaskAction(
+                kind="scroll_down",
+                reason=f"指定店铺内暂未找到“{task.query}”，继续浏览商品菜单。",
+            )
         if last_target == "外卖" and not matched:
             return TaskAction(
                 kind="abort",
@@ -314,14 +445,25 @@ class DeepSeekTaskPlanner:
                 reason="店铺页暂未暴露可执行控件，向下滚动以定位商品与加购按钮。",
             )
 
+        model_action_candidates = tuple(
+            item
+            for item in action_candidates
+            if not (
+                merchant_selected
+                and task.label_matches_query(item.label)
+                and not task.label_matches_quantity(item.label)
+            )
+        )
         payload = {
             "task": task.description,
-            "query": task.query,
+            "merchant_query": task.merchant_query,
+            "product_query": task.query,
+            "merchant_selected": merchant_selected,
             "current_app": understanding.current_app,
             "current_activity": understanding.current_activity,
             "screen": understanding.screen.to_dict(),
             "history": [item.model_dump() for item in history[-6:]],
-            "candidates": [item.to_dict() for item in action_candidates],
+            "candidates": [item.to_dict() for item in model_action_candidates],
             "allowed_actions": [
                 "tap_candidate",
                 "input_query",
@@ -336,7 +478,8 @@ class DeepSeekTaskPlanner:
                 "system",
                 "你是美团外卖任务的受限规划器。只能选择给出的 candidate_id，"
                 "不能生成坐标、商品、店铺、地址或支付动作。先进入首页/外卖，再搜索；"
-                "选择与 query 明确匹配的结果；加入购物车后进入购物车。"
+                "有 merchant_query 时必须先进入匹配店铺，再选择与 product_query "
+                "明确匹配的商品；加入购物车后停止。"
                 "遇到登录、权限、确认订单、支付或不确定状态时 abort。"
                 "只返回一个符合给定结构的 JSON 对象，不要返回 Markdown。",
             ),
@@ -366,7 +509,7 @@ class DeepSeekTaskPlanner:
                 )
             raise AgentError(detail) from last_error
 
-        by_id = {item.candidate_id: item for item in action_candidates}
+        by_id = {item.candidate_id: item for item in model_action_candidates}
         if decision.action == "tap_candidate":
             if decision.candidate_id not in by_id:
                 raise AgentError("DeepSeek 选择了任务候选列表之外的控件。")

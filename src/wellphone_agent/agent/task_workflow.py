@@ -103,6 +103,11 @@ class AppTaskSafetyPolicy:
                 raise AgentError("OCR 候选置信度不足，拒绝使用其坐标。")
             if not candidate.executable:
                 raise AgentError("候选仅用于页面理解，缺少可验证的可点击控件。")
+            if (
+                task.label_matches_query(candidate.label)
+                and not task.label_matches_quantity(candidate.label)
+            ):
+                raise AgentError("商品候选数量与单份任务不一致，拒绝选择多份套餐。")
         elif action.kind == "input_query":
             activity = understanding.current_activity or ""
             focused_by_workflow = bool(
@@ -317,7 +322,12 @@ class LangGraphAppTaskLoop:
             left, top, right, bottom = candidate.bounds
             self.actions.tap((left + right) // 2, (top + bottom) // 2)
         elif action.kind == "input_query":
-            self.actions.replace_text(state["task"].query)
+            completed_targets = tuple(
+                item.target_label or "" for item in state["history"]
+            )
+            self.actions.replace_text(
+                state["task"].input_query(completed_targets)
+            )
             self.actions.keyevent("KEYCODE_ENTER")
         elif action.kind == "scroll_down":
             self.actions.swipe(

@@ -4,7 +4,7 @@ import json
 import os
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .core import AgentError
 
@@ -12,11 +12,19 @@ from .core import AgentError
 class ShoppingIntent(BaseModel):
     """A locally enforced shopping goal that always stops before checkout."""
 
-    query: str = Field(min_length=1, max_length=80)
+    app: Literal["meituan"] = "meituan"
+    merchant_query: str | None = Field(default=None, min_length=1, max_length=80)
+    product_query: str = Field(min_length=1, max_length=80)
     selection_strategy: Literal["exact_match", "first_match"] = "exact_match"
     quantity: Literal[1] = 1
     specification_policy: Literal["default", "confirm"] = "confirm"
     stop_at: Literal["cart"] = "cart"
+
+    @property
+    def query(self) -> str:
+        """Backward-compatible product query used by the execution adapter."""
+
+        return self.product_query
 
 
 class DeepSeekShoppingIntentParser:
@@ -39,9 +47,10 @@ class DeepSeekShoppingIntentParser:
         model: str,
         structured_model: Any | None = None,
         base_url: str | None = None,
+        max_attempts: int = 2,
     ) -> None:
-        if not model.strip():
-            raise ValueError("A model name is required.")
+        if not model.strip() or max_attempts <= 0:
+            raise ValueError("A model name and positive attempt limit are required.")
         if structured_model is None:
             api_key = os.environ.get("DEEPSEEK_API_KEY")
             if not api_key:
@@ -71,6 +80,7 @@ class DeepSeekShoppingIntentParser:
             )
         self.model = model
         self.structured_model = structured_model
+        self.max_attempts = max_attempts
 
     @staticmethod
     def _normalize(payload: Any) -> Any:
@@ -93,6 +103,38 @@ class DeepSeekShoppingIntentParser:
             normalized["selection_strategy"] = strategy_aliases[strategy]
         if specification in specification_aliases:
             normalized["specification_policy"] = specification_aliases[specification]
+
+        def first_text(*names: str) -> str | None:
+            for name in names:
+                value = normalized.get(name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        product = first_text(
+            "product_query",
+            "product_name",
+            "product",
+            "item_name",
+            "item",
+            "query",
+        )
+        merchant = first_text(
+            "merchant_query",
+            "merchant_name",
+            "merchant",
+            "store_query",
+            "store_name",
+            "brand",
+        )
+        search_keyword = first_text("search_keyword", "keyword")
+        if product is None:
+            product = search_keyword
+        elif merchant is None and search_keyword and search_keyword != product:
+            merchant = search_keyword
+        normalized["app"] = "meituan"
+        normalized["product_query"] = product
+        normalized["merchant_query"] = merchant
         normalized["quantity"] = normalized.get("quantity", 1)
         normalized["stop_at"] = "cart"
         return normalized
@@ -126,10 +168,14 @@ class DeepSeekShoppingIntentParser:
             raise AgentError("购物任务必须为 1 到 600 字节且不能包含控制字符。")
         if any(term in normalized for term in self.BLOCKED_TERMS):
             raise AgentError("任务包含结算、支付或地址修改，超出当前安全边界。")
-        messages = [
+        messages: list[tuple[str, str]] = [
             (
                 "system",
-                "你只负责将美团商品加购需求转为结构化意图。"
+                "你只负责将用户自由表达的美团商品加购需求转为结构化意图。"
+                "app 必须是 meituan；product_query 是必填的商品名称；"
+                "merchant_query 是可选的店铺、品牌或商家名称。"
+                "如果用户说‘搜索 X，选择 Y’，通常 X 是 merchant_query，"
+                "Y 是 product_query；如果只提到一个商品，则 merchant_query 为 null。"
                 "selection_strategy 只能是 exact_match 或 first_match；"
                 "quantity 当前只允许 1；specification_policy 只能是 default 或 confirm；"
                 "stop_at 必须是 cart。不得生成结算、下单、地址或支付动作。"
@@ -137,17 +183,48 @@ class DeepSeekShoppingIntentParser:
             ),
             ("human", normalized),
         ]
-        try:
-            intent = self._parse(self.structured_model.invoke(messages))
-        except Exception as exc:
-            status = getattr(exc, "status_code", None)
+        intent: ShoppingIntent | None = None
+        last_error: Exception | None = None
+        for attempt in range(self.max_attempts):
+            try:
+                intent = self._parse(self.structured_model.invoke(messages))
+                break
+            except Exception as exc:
+                last_error = exc
+                if getattr(exc, "status_code", None) in {401, 429}:
+                    break
+                if attempt + 1 < self.max_attempts:
+                    messages.append(
+                        (
+                            "human",
+                            "上一次返回没有通过本地校验。请重新返回 JSON："
+                            "product_query 必填；merchant_query 可为 null；"
+                            "quantity 只能为 1；stop_at 只能为 cart。",
+                        )
+                    )
+        if intent is None:
+            status = getattr(last_error, "status_code", None)
             if status == 401:
                 detail = "DeepSeek API 凭据无效。"
             elif status == 429:
                 detail = "DeepSeek API 当前达到调用限制或无可用额度。"
+            elif isinstance(last_error, ValidationError) and any(
+                error.get("loc") == ("quantity",)
+                for error in last_error.errors()
+            ):
+                detail = "当前安全版本一次只支持加购 1 份商品。"
+            elif isinstance(last_error, ValidationError) and any(
+                error.get("loc") == ("product_query",)
+                for error in last_error.errors()
+            ):
+                detail = "无法确定商品名称，请说明想要购买的具体商品。"
             else:
-                detail = f"购物任务理解失败（{type(exc).__name__}）。"
-            raise AgentError(detail) from exc
+                detail = "购物需求暂时无法稳定解析，请换一种自然说法后重试。"
+            raise AgentError(detail) from last_error
         if any(term in intent.query for term in self.BLOCKED_TERMS):
             raise AgentError("模型返回了超出安全边界的搜索词。")
+        if intent.merchant_query and any(
+            term in intent.merchant_query for term in self.BLOCKED_TERMS
+        ):
+            raise AgentError("模型返回了超出安全边界的店铺名称。")
         return intent
